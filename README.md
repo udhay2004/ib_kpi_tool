@@ -9,7 +9,7 @@ A guided credit-appraisal case file for Indian business loans, in six steps:
 | ③ KYC | Document checklist by constitution (RBI KYC Master Direction): COI, MOA, AOA, PAN, GST, board resolution, shareholding, address proof (+ Udyam, LEI if applicable); PAN + ID proof for each director / partner / guarantor. Files are **attached to the credit file as documentation only, not read or verified**. The type is guessed from the file name and can be corrected. |
 | ④ Financials | Audited financials, bank statements, GST, optional ITRs → KPIs, cross-checks, red flags (details below). |
 | ⑤ Repayment | **How they will repay**: sources of repayment (cash accruals for term debt, the operating cycle for CC/OD), DSCR year by year with the new debt on top of existing debt, cash left in the tightest year, how far earnings can fall before DSCR < 1.25x and < 1.0x, a stress test (no growth, revenue −10% / −20%, interest +2%), debt / EBITDA after the proposal, and what the bank statements and GST confirm (credits vs revenue, EMI burden, bounces). Ends in a verdict (Comfortable / Adequate / Stretched / Insufficient) with written observations that go into the credit note. Also the repayment structure requested (EMI, step-up, ballooning, bullet, structured; moratorium) and eligibility per facility (turnover method, MPBF, LTV, LRD…). |
-| ⑥ Credit summary | Readiness by step, key numbers, the proposal table, every finding from all steps. Download the **credit file (.zip)**: the Excel credit note (with the repayment-capacity write-up) plus folders with every KYC, financial and security document. Or **save the case file** (.json) to reopen later from the sidebar. |
+| ⑥ Credit summary | Readiness by step, key numbers, the proposal table, every finding from all steps. Fill in the report details (bank, branch, prepared by, reference, your recommendation) and download the **credit report (PDF)** for the bank — see below. Also the **credit file (.zip)** (the PDF, the Excel credit note and every original file), the Excel credit note alone, or the **case file** (.json) to reopen later from the sidebar. |
 
 ---
 
@@ -38,6 +38,29 @@ Every KPI is a plain Python formula you can check; an AI model, if used at all, 
 | Scanned PDFs, photos | — | Need an API key (Claude), or ask the client for the digital / Excel version. |
 
 Always check the **Review** tab: the parser is rule-based and unusual layouts can be misread.
+
+## The credit report (PDF) for the bank
+
+One PDF in the usual credit appraisal memorandum (CAM) order. There is no single RBI format — each bank has its own — so the
+sections follow what bank credit notes commonly contain:
+
+1. Proposal at a glance — key numbers vs benchmarks, facilities, repayment verdict, high findings, your recommendation
+2. Borrower profile — constitution, industry, MSME class, GSTIN, bank accounts, promoters / directors / guarantors
+3. Proposed facilities and terms · 4. Assessment of limits (turnover method / MPBF / project cost / NFB)
+5. Financial analysis — summary financials and ratios by year · 6. Banking conduct — account KPIs, month-wise table,
+   largest payers · 7. GST returns · 8. Promoters' ITRs
+9. Security — each item with charge, value, margin, realisable value; cover; documents needed to create the charge
+10. Repayment capacity — verdict, written observations, measures, stress tests, DSCR by year, repayment schedules
+11. Risks and mitigants — every finding from all steps
+12. Compliance checks for the bank — credit bureau, RBI wilful-defaulter list, CKYC, GSTIN, CRILC (≥ ₹5 Cr), MCA charges,
+    Udyam, legal / valuation, CERSAI, ECGC (exports), site visit — with a blank column for the bank's remarks
+13. Suggested terms and conditions — before and after disbursement
+14. KYC document index (and what is still missing) · 15. Other documents relied on · 16. Basis of preparation and signature
+
+Then the **annexures**: every KYC, financial and security file uploaded, merged into the same PDF (PDFs as they are,
+photos / scans on A4 pages), each page stamped with its annexure number. Excel, Word and CSV files are listed and go in the
+ZIP instead. Password-protected PDFs must be unlocked in the app first. The PDF has bookmarks for every section and
+annexure. KYC is attached as received; verification and the checks in section 12 are for the bank.
 
 ## Run locally
 
@@ -126,6 +149,6 @@ cash conversion cycle, CFO/EBITDA, free cash flow.
 `loans.py` facility catalogue and eligibility · `security.py` security types and cover · `kyc.py` KYC checklist and file-name
 guessing · `repayment.py` schedules and DSCR · `ui.py` theme and components · `intake.py` checklist, ZIP sorting, coverage ·
 `extractor.py` Claude extraction · `schemas.py` fields extracted per document type · `kpis.py` formulas, flags, scorecard ·
-`report.py` Excel export · `demo_data.py` fictional sample · `test_kpis.py`, `test_case.py` tests (`python -m pytest`)
+`report.py` Excel export · `credit_report.py` PDF credit report · `demo_data.py` fictional sample · `test_*.py` tests (`python -m pytest`)
 
 The output is a draft for an analyst to review. It is not a credit or investment decision.

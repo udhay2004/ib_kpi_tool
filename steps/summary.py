@@ -1,4 +1,4 @@
-"""Step 6 - credit summary across all steps, credit note + KYC file, save / open a case file."""
+"""Step 6 - credit summary across all steps, the credit report (PDF) for the bank, credit file ZIP, save / open a case."""
 
 import io
 import json
@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 import capacity
+import credit_report
 import kpis
 import kyc
 import loans
@@ -21,7 +22,7 @@ from intake import coverage
 from report import to_excel
 from steps import kyc_step
 from steps.financials import analysis, fin_docs, latest
-from steps.repayment_step import assessments, capacity_result, dscr_table, repay_cfg
+from steps.repayment_step import assessments, capacity_result, dscr_table, repay_cfg, schedules
 
 SEV_ORDER = {"High": 0, "Medium": 1, "Low": 2}
 
@@ -127,11 +128,13 @@ def _safe(name: str) -> str:
     return re.sub(r'[\\/:*?"<>|]+', "", name)[:150]
 
 
-def credit_file_zip(xls: bytes, name: str, folders: dict | None = None) -> bytes:
-    """Credit note, every attached KYC file (numbered and named by document), and any other source files.
-    folders: {folder name: [(file name, bytes)]}."""
+def credit_file_zip(xls: bytes, name: str, folders: dict | None = None, pdf: bytes | None = None) -> bytes:
+    """Credit report (PDF), credit note (Excel), every attached KYC file (numbered and named by document), and any
+    other source files. folders: {folder name: [(file name, bytes)]}."""
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        if pdf:
+            z.writestr(f"{name}_credit_report.pdf", pdf)
         z.writestr(f"{name}_credit_note.xlsx", xls)
         for folder, files in (folders or {}).items():
             for fname, data in files:
@@ -143,6 +146,49 @@ def credit_file_zip(xls: bytes, name: str, folders: dict | None = None) -> bytes
             parts = [d["doc_id"], label] + ([d["person"]] if d.get("person") else [])
             z.writestr(f"KYC/{_safe(' - '.join(parts + [d['filename'].rsplit('/', 1)[-1]]))}", d["data"])
     return buf.getvalue()
+
+
+def entity_details() -> dict:
+    """GSTIN / bank accounts as read from the financial documents, for the borrower profile."""
+    out, banks = {}, []
+    for d in as_dicts("docs", "demo"):
+        x = d.get("extracted") or {}
+        if x.get("gstin") and "GSTIN" not in out:
+            out["GSTIN"] = x["gstin"] + (f" ({x['state']})" if x.get("state") else "")
+        if x.get("bank_name"):
+            banks.append(" ".join(str(v) for v in (x["bank_name"], x.get("account_type"),
+                                                   f"..{x['account_number_last4']}" if x.get("account_number_last4") else "")
+                                  if v))
+    if banks:
+        out["Bank accounts (statements given)"] = "; ".join(dict.fromkeys(banks))
+    return out
+
+
+def report_pdf(s: dict) -> bytes:
+    def files(store):
+        return [(d.doc_id, d.filename, d.data) for d in ss[store].values()]
+    info = {**ss.case.get("report", {}), "date": datetime.now().strftime("%d %b %Y")}
+    return credit_report.build_pdf(s, info, kyc_step.kyc_docs(), kyc_step.missing(),
+                                   {"Financial documents": files("docs") or
+                                    [(d["doc_id"], d["filename"], None) for d in ss.demo or []],
+                                    "Security documents": files("sec_docs") or
+                                    [(d["doc_id"], d["filename"], None) for d in ss.static_sec or []]},
+                                   schedules() if s["case"]["facilities"] else {}, entity_details())
+
+
+def _report_details():
+    rep = ss.case.setdefault("report", {})
+    with st.expander("Report details — bank, preparer, recommendation", expanded=not rep.get("bank")):
+        c1, c2 = st.columns(2)
+        for col, key, label, ph in ((c1, "bank", "Bank", "e.g. State Bank of India"),
+                                    (c2, "branch", "Branch", "e.g. MIDC Ambernath"),
+                                    (c1, "prepared_by", "Prepared by", "Name, firm"),
+                                    (c2, "reference", "Reference no.", "Your file / proposal reference")):
+            rep[key] = col.text_input(label, value=rep.get(key, ""), placeholder=ph, key=f"rep_{key}")
+        rep["recommendation"] = st.text_area(
+            "Recommendation / remarks for the bank", value=rep.get("recommendation", ""), height=90,
+            key="rep_recommendation", placeholder="e.g. Recommended for ₹10 Cr fund-based and ₹2.5 Cr non-fund limits, "
+                                                  "subject to reducing CC to the assessed ₹4.38 Cr…")
 
 
 def render(div, unit_label):
@@ -203,8 +249,11 @@ def render(div, unit_label):
                                    key="sum_sev") or []
         ui.flag_cards(s["flags"][s["flags"]["severity"].isin(sev)])
 
-    ui.section("Export")
-    c1, c2, c3 = st.columns(3)
+    ui.section("Report for the bank", "One PDF: the full appraisal note — proposal, borrower, financials, banking, GST, "
+                                      "security, repayment capacity, risks, checks for the bank — followed by every KYC, "
+                                      "financial and security document as annexures.")
+    _report_details()
+    c1, c2, c3, c4 = st.columns(4)
     name = (b["name"] or "Case").replace(" ", "_")
     extra = {
         "Proposal": s["facilities"],
@@ -230,11 +279,22 @@ def render(div, unit_label):
     n_files = sum(1 for d in kyc_step.kyc_docs() if d["data"])
     folders = {"Financial documents": [(f"{d.doc_id} - {d.filename.rsplit('/', 1)[-1]}", d.data) for d in ss.docs.values()],
                "Security documents": [(f"{d.doc_id} - {d.filename.rsplit('/', 1)[-1]}", d.data) for d in ss.sec_docs.values()]}
-    c1.download_button("⬇  Credit file (.zip)", credit_file_zip(xls, name, folders), file_name=f"{name}_credit_file.zip",
-                       type="primary", use_container_width=True,
-                       help=f"Credit note + {n_files} KYC document(s), plus the financial and security documents uploaded.")
-    c2.download_button("⬇  Credit note only (Excel)", xls, file_name=f"{name}_credit_note.xlsx",
+    try:
+        pdf = report_pdf(s)
+    except Exception as ex:  # never lose the other exports because of one bad file
+        pdf = None
+        st.error(f"Could not build the PDF report: {ex}")
+    if pdf:
+        c1.download_button("⬇  Credit report (PDF)", pdf, file_name=f"{name}_credit_report.pdf", type="primary",
+                           use_container_width=True, mime="application/pdf",
+                           help="Appraisal note with all KYC, financial and security documents attached as annexures.")
+    c2.download_button("⬇  Credit file (.zip)", credit_file_zip(xls, name, folders, pdf),
+                       file_name=f"{name}_credit_file.zip", use_container_width=True,
+                       help=f"PDF report + Excel credit note + {n_files} KYC document(s), plus the financial and "
+                            f"security documents in their original format.")
+    c3.download_button("⬇  Credit note (Excel)", xls, file_name=f"{name}_credit_note.xlsx",
                        use_container_width=True)
-    c3.download_button("⬇  Save case file (.json)", save_case(), file_name=f"{name}_case.json", use_container_width=True,
+    c4.download_button("⬇  Save case file (.json)", save_case(), file_name=f"{name}_case.json", use_container_width=True,
                        help="Everything entered and extracted (not the original files). Open it later from the sidebar.")
-    st.caption("KYC documents are attached as received. They are not verified by this tool.")
+    st.caption("KYC documents are attached as received. They are not verified by this tool. Excel, Word and other "
+               "non-PDF files are listed in the PDF and included in the ZIP in their original format.")
