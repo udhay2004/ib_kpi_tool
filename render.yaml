@@ -1,0 +1,14 @@
+# Render blueprint: New + > Blueprint > pick this repository. Render builds the Dockerfile and gives an https URL.
+services:
+  - type: web
+    name: credit-appraisal-workbench
+    runtime: docker
+    plan: starter            # "free" also works but sleeps after 15 min idle and has 512 MB RAM
+    region: singapore        # closest Render region to India
+    healthCheckPath: /_stcore/health
+    autoDeploy: true
+    envVars:
+      - key: APP_PASSWORD    # team password screen - set it in the Render dashboard
+        sync: false
+      - key: ANTHROPIC_API_KEY  # optional: only for scanned PDFs and valuation reports
+        sync: false
