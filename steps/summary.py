@@ -249,9 +249,9 @@ def render(div, unit_label):
                                    key="sum_sev") or []
         ui.flag_cards(s["flags"][s["flags"]["severity"].isin(sev)])
 
-    ui.section("Report for the bank", "One PDF: the full appraisal note — proposal, borrower, financials, banking, GST, "
-                                      "security, repayment capacity, risks, checks for the bank — followed by every KYC, "
-                                      "financial and security document as annexures.")
+    ui.section("Report for the bank", "One PDF: company name, company KYC, director KYC, financials (last 2 years), GST "
+                                      "(last 12 months), proposed plan, security and repayment, then supporting analysis "
+                                      "and the financial and security documents as annexures.")
     _report_details()
     c1, c2, c3, c4 = st.columns(4)
     name = (b["name"] or "Case").replace(" ", "_")
@@ -287,7 +287,7 @@ def render(div, unit_label):
     if pdf:
         c1.download_button("⬇  Credit report (PDF)", pdf, file_name=f"{name}_credit_report.pdf", type="primary",
                            use_container_width=True, mime="application/pdf",
-                           help="Appraisal note with all KYC, financial and security documents attached as annexures.")
+                           help="Appraisal note with all KYC, financial and security documents attached.")
     c2.download_button("⬇  Credit file (.zip)", credit_file_zip(xls, name, folders, pdf),
                        file_name=f"{name}_credit_file.zip", use_container_width=True,
                        help=f"PDF report + Excel credit note + {n_files} KYC document(s), plus the financial and "

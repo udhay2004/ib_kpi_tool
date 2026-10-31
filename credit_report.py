@@ -1,10 +1,10 @@
-"""Credit appraisal memorandum (CAM) as one PDF for the bank: the full write-up, with the client's KYC, financial
-and security documents merged in as annexures.
+"""Credit appraisal memorandum (CAM) as one PDF for the bank, with the client's documents merged in.
 
-Section order follows the usual Indian bank CAM / credit proposal note: proposal at a glance, borrower and
-promoters, facilities, assessment of limits, financial / banking / GST analysis, security, repayment capacity,
-risks, compliance checks for the bank, suggested terms, document index, declaration. There is no single RBI
-format - every bank has its own - so the bank's own note format and sanction terms prevail.
+Order: company name, company KYC, director KYC, financials (last 2 years), GST (last 12 months), proposed plan,
+security, repayment. KYC documents sit inside their sections. Supporting analysis follows the repayment section:
+banking conduct, ITRs, overall assessment, risks, compliance checks for the bank, suggested terms, declaration.
+Financial and security documents are annexures at the end. There is no single RBI format - every bank has its own -
+so the bank's own note format and sanction terms prevail.
 
 Pure module (no Streamlit): build_pdf() takes the case summary from steps.summary.build() plus the documents.
 """
@@ -47,11 +47,15 @@ tr.High td {color: #9b1c1c;}
 .box {border: 0.8pt solid #1f3864; border-left: 3pt solid #1f3864; padding: 5pt 7pt; margin: 4pt 0 6pt 0;}
 .muted {color: #667085; font-size: 7.8pt;}
 ul {margin: 2pt 0 4pt 0; padding-left: 13pt;} li {margin-bottom: 2pt;}
-.cover-title {font-size: 22pt; font-weight: bold; color: #1f3864; margin: 120pt 0 4pt 0;}
-.cover-sub {font-size: 12pt; color: #475467; margin-bottom: 26pt;}
-.cover-name {font-size: 17pt; font-weight: bold; margin-bottom: 18pt;}
-.toc td {font-size: 9.5pt; padding: 3.5pt 2pt;}
+.cover-name {font-size: 24pt; font-weight: bold; color: #1f3864; margin: 40pt 0 4pt 0;}
+.cover-sub {font-size: 12pt; color: #475467; margin-bottom: 18pt;}
+.toc td {font-size: 9.5pt; padding: 3.5pt 3pt;}
+.toc td.sp {font-size: 1pt; padding: 0 3pt; line-height: 0;}
 """
+
+# constitution family -> (name of the entity, name of the people behind it), for section titles
+KYC_TITLES = {"company": ("Company", "Director"), "llp": ("LLP", "Partner"), "partnership": ("Firm", "Partner"),
+              "proprietorship": ("Business", "Proprietor"), "trust": ("Trust", "Trustee")}
 
 SEV_ORDER = {"High": 0, "Medium": 1, "Low": 2}
 STATUS_WORD = {"good": "Comfortable", "warning": "Watch", "critical": "Concern"}
@@ -86,7 +90,7 @@ BANK_KPI_LABELS = [  # key, label, unit
 ]
 
 GST_KPI_LABELS = [
-    ("months_filed", "Months filed", "count"), ("gst_turnover", "GST turnover", "INR"),
+    ("period", "Period", "text"), ("months_filed", "Months filed", "count"), ("gst_turnover", "GST turnover", "INR"),
     ("avg_monthly_turnover", "Average monthly turnover", "INR"), ("tax_paid_cash", "Tax paid in cash", "INR"),
     ("itc_claimed", "ITC claimed", "INR"), ("itc_available_2b", "ITC available (GSTR-2B)", "INR"),
     ("itc_excess_over_2b", "ITC claimed over 2B", "%"), ("gstr1_vs_3b_gap", "GSTR-1 vs 3B gap", "%"),
@@ -184,26 +188,22 @@ def status(st_: str | None, text: str | None = None) -> str:
 
 # ---------------------------------------------------------------- sections
 
-def _cover(s, info, total_pages_hint=""):
+def _cover(s, info, contents):
     b, t = s["case"]["borrower"], s["totals"]
-    rows = [("Borrower", e(b["name"] or "Unnamed borrower")), ("Constitution", e(b["constitution"])),
+    name = e(b["name"] or "Unnamed borrower")
+    rows = [("Constitution", e(b["constitution"])),
             ("Total proposed", e(inr(t["total"])) + f' &nbsp;<span class="muted">(fund {e(inr(t["fund"]))} · '
                                                      f'non-fund {e(inr(t["nonfund"]))})</span>'),
             ("Submitted to", e(", ".join(x for x in (info.get("bank"), info.get("branch")) if x) or "—")),
             ("Prepared by", e(info.get("prepared_by"))), ("Reference", e(info.get("reference"))),
             ("Date", e(info.get("date") or datetime.now().strftime("%d %b %Y")))]
-    return (f'<div class="cover-title">Credit Appraisal Memorandum</div>'
-            f'<div class="cover-sub">Credit proposal note with supporting documents</div>'
-            f'<div class="cover-name">{e(b["name"] or "Unnamed borrower")}</div>{kv_table(rows)}'
-            f'<p class="muted" style="margin-top:30pt">Prepared from documents supplied by the borrower. Figures were read '
-            f'from those documents and should be checked against the originals in the annexures. KYC documents are '
-            f'attached as received and have not been verified by the preparer; verification, credit bureau and '
-            f'regulatory checks are for the bank.</p>')
-
-
-def _toc(entries):
-    return '<h1>Contents</h1><div class="toc">' + table([], [[escape(t), str(p)] for t, p in entries], num_cols=(1,),
-                                                          widths=[0.9, 0.1], head_row=False) + "</div>"
+    return (f'<div class="cover-name">{name}</div><div class="cover-sub">Credit Appraisal Memorandum</div>'
+            f'{kv_table(rows)}<h2>Contents</h2><div class="toc">'
+            + table([], [[escape(t_), str(p)] for t_, p in contents], num_cols=(1,), widths=[0.9, 0.1], head_row=False)
+            + '</div><p class="muted" style="margin-top:14pt">Prepared from documents supplied by the borrower. Figures '
+            'were read from those documents and should be checked against the originals attached. KYC documents are '
+            'attached as received and have not been verified by the preparer; verification, credit bureau and '
+            'regulatory checks are for the bank.</p>')
 
 
 def _summary(s, info):
@@ -238,14 +238,8 @@ def _summary(s, info):
          cap["verdict"]["status"] if cap else None),
     ]
     rows = [[escape(a), f'<b>{v}</b>', escape(bm), status(st_) if st_ else ""] for a, v, bm, st_ in metrics]
-    out = "<h1>1. Proposal at a glance</h1>"
+    out = "<h1>10. Overall assessment</h1>"
     out += table(["Measure", "Value", "Benchmark", "Assessment"], rows, widths=["40%", "22%", "18%", "20%"])
-    if not s["facilities"].empty:
-        out += "<h2>Facilities requested</h2>"
-        out += table(["Facility", "Type", "Amount (₹ lakh)", "Tenor (m)", "Rate %", "Purpose"],
-                     [[e(r["Facility"]), e(r["Category"]), lakh(r["Amount (₹)"]),
-                       e(None if _na(r["Tenor (months)"]) else int(r["Tenor (months)"])), e(r["Rate %"]), e(r["Purpose"])]
-                      for _, r in s["facilities"].iterrows()], num_cols=(2, 3, 4))
     out += "<h2>Overall view</h2>"
     if cap:
         out += (f'<div class="box">{status(cap["verdict"]["status"], "Repayment capacity: " + cap["verdict"]["label"])}'
@@ -260,23 +254,38 @@ def _summary(s, info):
     return out
 
 
-def _borrower(s, people, gst_meta):
+def _kyc_table(docs, ref):
+    if not docs:
+        return '<p class="muted">No documents attached.</p>'
+    return table(["ID", "Document", "Person", "File", "In this report"],
+                 [[e(d["doc_id"]), e(kyc.ALL_KINDS.get(d["doc_type"], d["doc_type"])), e(d.get("person")),
+                   e(d["filename"].rsplit("/", 1)[-1]), e(ref[d["doc_id"]]["where"])] for d in docs])
+
+
+def _company_kyc(s, docs, ref, missing, gst_meta, title):
     b = s["case"]["borrower"]
     pairs = [("Name", e(b["name"])), ("Constitution", e(b["constitution"])), ("Industry / activity", e(b["industry"])),
              ("MSME classification (Udyam)", e(b["msme_class"])), ("Years in business", e(b["years_in_business"])),
              ("Existing bank exposure", e(inr(b.get("existing_exposure"))))]
-    for k, v in gst_meta.items():
-        pairs.append((k, e(v)))
-    out = "<h1>2. Borrower profile</h1>" + kv_table(pairs)
-    out += "<h2>Promoters, directors, partners and guarantors</h2>"
+    pairs += [(k, e(v)) for k, v in gst_meta.items()]
+    out = f"<h1>1. {title} KYC</h1>" + kv_table(pairs) + "<h2>Documents</h2>"
+    out += '<p class="muted">Attached as received from the borrower. Not verified by the preparer.</p>'
+    out += _kyc_table(docs, ref)
+    if missing:
+        out += "<h2>Required documents not yet received</h2><ul>" + "".join(f"<li>{e(m)}</li>" for m in missing) + "</ul>"
+    return out
+
+
+def _director_kyc(people, docs, ref, title):
+    out = f"<h1>2. {title} KYC</h1><h2>{title}s, promoters and guarantors</h2>"
     out += table(["Name", "Role / documents on file"], [[e(p), e(r)] for p, r in people.items()]) if people else \
         '<p class="muted">No individuals named on the KYC documents or guarantees.</p>'
-    return out
+    return out + "<h2>Documents</h2>" + _kyc_table(docs, ref)
 
 
 def _proposal(s):
     t, fac = s["totals"], s["facilities"]
-    out = "<h1>3. Proposed facilities and terms</h1>"
+    out = "<h1>5. Proposed plan</h1>"
     rows = []
     for i, f in enumerate(s["case"]["facilities"]):
         p = loans.product(f["product"])
@@ -304,7 +313,7 @@ def _proposal(s):
 
 def _assessment(s):
     fac = s["facilities"]
-    out = "<h1>4. Assessment of limits</h1>"
+    out = "<h2>Assessment of limits</h2>"
     if fac.empty:
         return out + '<p class="muted">No facilities.</p>'
     rows, cls = [], []
@@ -324,12 +333,14 @@ def _assessment(s):
 
 def _financials(s):
     res = s["res"]
-    out = "<h1>5. Financial analysis</h1>"
+    out = "<h1>3. Financials — last 2 years</h1>"
     if res is None:
         return out + '<p class="critical">No financial statements were read.</p>'
     fin = res["tables"]["financials"]
     if not fin.empty:
-        years = list(fin.index)
+        years = list(fin.index)[-2:]
+        if len(years) < 2:
+            out += f'<p class="critical">Only {escape(str(years[0]))} was read; two years are needed.</p>'
         out += "<h2>Summary financials (₹ lakh)</h2>"
         rows = [["Audited"] + [e("Yes" if fin.at[y, "audited"] else "No") if "audited" in fin.columns else "—"
                                for y in years]]
@@ -339,7 +350,7 @@ def _financials(s):
         out += table(["Line item"] + [escape(str(y)) for y in years], rows, num_cols=tuple(range(1, len(years) + 1)))
     fk = res["fin_kpis"]
     if not fk.empty:
-        years = [c for c in fk.columns if c not in ("KPI", "unit", "formula")]
+        years = [c for c in fk.columns if c not in ("KPI", "unit", "formula")][-2:]
         out += "<h2>Key ratios</h2>"
         out += table(["Ratio"] + [escape(y) for y in years] + ["Basis"],
                      [[e(r["KPI"])] + [e(val(r[y], r["unit"])) for y in years] + [f'<span class="muted">{e(r["formula"])}</span>']
@@ -350,7 +361,7 @@ def _financials(s):
 
 def _banking(s):
     res = s["res"]
-    out = "<h1>6. Banking conduct</h1>"
+    out = "<h1>8. Banking conduct</h1>"
     if res is None or res["bank_kpis"].empty:
         return out + '<p class="muted">No bank statements were read.</p>'
     bk = res["bank_kpis"]
@@ -382,22 +393,25 @@ def _banking(s):
 
 def _gst(s):
     res = s["res"]
-    out = "<h1>7. GST returns</h1>"
-    if res is None or res["gst_kpis"].empty:
+    out = "<h1>4. GST — last 12 months</h1>"
+    if res is None or res["tables"]["gst"].empty:
         return out + '<p class="muted">No GST returns were read.</p>'
-    gk = res["gst_kpis"]
-    out += table(["Measure (₹ lakh where amount)"] + [e(y) for y in gk["fiscal_year"]],
-                 [[escape(label)] + [e(val(r.get(k), unit)) for _, r in gk.iterrows()]
-                  for k, label, unit in GST_KPI_LABELS if k in gk.columns], num_cols=tuple(range(1, len(gk) + 1)))
-    g = res["tables"]["gst"]
-    if not g.empty:
-        out += "<h2>Return-wise summary (₹ lakh)</h2>"
-        cols = [("period", "Period", "text"), ("return_type", "Return", "text"), ("taxable_turnover", "Taxable value", "INR"),
-                ("export_turnover", "Exports", "INR"), ("tax_paid_cash", "Tax in cash", "INR"),
-                ("itc_claimed", "ITC claimed", "INR"), ("filing_date", "Filed", "text"), ("due_date", "Due", "text")]
-        cols = [c for c in cols if c[0] in g.columns]
-        out += table([c[1] for c in cols], [[e(val(r[k], u)) for k, _, u in cols] for _, r in g.iterrows()],
-                     num_cols=tuple(i for i, c in enumerate(cols) if c[2] != "text"))
+    g, m = kpis.gst_last_12_months(res["tables"]["gst"])
+    if m is None:
+        out += '<p class="critical">No monthly returns were read; only annual returns are shown.</p>'
+        g = res["tables"]["gst"]
+    else:
+        if m["months_filed"] < 12:
+            out += f'<p class="critical">Only {m["months_filed"]} of the last 12 months were read.</p>'
+        out += table(["Measure (₹ lakh where amount)", "Last 12 months"],
+                     [[escape(label), e(val(m.get(k), unit))] for k, label, unit in GST_KPI_LABELS if k in m], num_cols=(1,))
+    out += "<h2>Return-wise summary (₹ lakh)</h2>"
+    cols = [("period", "Period", "text"), ("return_type", "Return", "text"), ("taxable_turnover", "Taxable value", "INR"),
+            ("export_turnover", "Exports", "INR"), ("tax_paid_cash", "Tax in cash", "INR"),
+            ("itc_claimed", "ITC claimed", "INR"), ("filing_date", "Filed", "text"), ("due_date", "Due", "text")]
+    cols = [c for c in cols if c[0] in g.columns]
+    out += table([c[1] for c in cols], [[e(val(r[k], u)) for k, _, u in cols] for _, r in g.iterrows()],
+                 num_cols=tuple(i for i, c in enumerate(cols) if c[2] != "text"))
     cu = res["tables"].get("customers")
     if cu is not None and not cu.empty:
         out += "<h2>Largest customers (GST)</h2>"
@@ -409,7 +423,7 @@ def _gst(s):
 def _itr(s):
     res = s["res"]
     itr = res["tables"]["itr"] if res is not None else pd.DataFrame()
-    out = "<h1>8. Income tax returns of promoters / guarantors</h1>"
+    out = "<h1>9. Income tax returns of promoters / guarantors</h1>"
     if itr.empty:
         return out + '<p class="muted">No ITRs were read.</p>'
     cols = [("assessee_name", "Assessee", "text"), ("assessment_year", "AY", "text"), ("itr_form", "Form", "text"),
@@ -423,7 +437,7 @@ def _itr(s):
 
 def _security(s):
     secs, cov = s["case"]["securities"], s["cover"]
-    out = "<h1>9. Security</h1>"
+    out = "<h1>6. Security</h1>"
     if not secs:
         return out + '<p class="critical">No security offered.</p>'
     rows = []
@@ -452,7 +466,7 @@ def _security(s):
 
 def _repayment(s, schedules):
     cap, dt = s["capacity"], s["dscr"]
-    out = "<h1>10. Repayment capacity</h1>"
+    out = "<h1>7. Repayment</h1>"
     if cap is None:
         return out + '<p class="muted">Not assessed — no facilities.</p>'
     out += (f'<div class="box">{status(cap["verdict"]["status"], cap["verdict"]["label"])} — '
@@ -470,7 +484,7 @@ def _repayment(s, schedules):
         [[e(r["Scenario"]), e(val(r["Minimum DSCR"], "x")), e(val(r["Average DSCR"], "x")),
           status(r.get("Status"))] for _, r in stv.iterrows()], num_cols=(1, 2))
     if dt is not None and not dt.empty:
-        out += "<h2>Projected debt service coverage (₹ lakh)</h2>" + table(
+        out += '<h2 style="page-break-before:always">Projected debt service coverage (₹ lakh)</h2>' + table(
             ["Year", "Cash accrual", "Available for debt service", "New interest", "New principal", "Existing debt service",
              "Total debt service", "DSCR"],
             [[e(int(r["year"])), lakh(r["cash_accrual"]), lakh(r["available_for_debt_service"]), lakh(r["new_interest"]),
@@ -575,46 +589,38 @@ def suggested_terms(s) -> tuple[list, list]:
     return pre, post
 
 
-def _checks_and_terms(s):
+def _checks(s):
     out = "<h1>12. Compliance checks for the bank</h1>"
     out += '<p class="muted">Not carried out by the preparer. Left for the bank to record.</p>'
     out += table(["Check", "Why", "Status / remarks (bank)"],
                  [[e(c), e(w), "&nbsp;"] for c, w in compliance_checks(s)], widths=["44%", "36%", "20%"])
+    return out
+
+
+def _terms(s):
     pre, post = suggested_terms(s)
-    out += "<h1>13. Suggested terms and conditions</h1>"
+    out = "<h1>13. Suggested terms and conditions</h1>"
     out += '<p class="muted">Suggested from the proposal and security. The bank\'s sanction letter prevails.</p>'
     out += "<h2>Before disbursement</h2><ul>" + "".join(f"<li>{e(x)}</li>" for x in pre) + "</ul>"
     out += "<h2>After disbursement / covenants</h2><ul>" + "".join(f"<li>{e(x)}</li>" for x in post) + "</ul>"
     return out
 
 
-def _documents(s, kyc_list, kyc_missing, annex):
-    out = "<h1>14. KYC documents</h1>"
-    out += '<p class="muted">Attached as received from the borrower. Not verified by the preparer.</p>'
-    ref = {a["key"]: a for a in annex}
-    rows = [[e(d["doc_id"]), e(kyc.ALL_KINDS.get(d["doc_type"], d["doc_type"])), e(d.get("person")),
-             e(d["filename"].rsplit("/", 1)[-1]), e(ref[d["doc_id"]]["where"]) if d["doc_id"] in ref else "Not attached"]
-            for d in kyc_list]
-    out += table(["ID", "Document", "Person", "File", "In this report"], rows)
-    if kyc_missing:
-        out += "<h2>Required documents not yet received</h2><ul>" + "".join(
-            f"<li>{e(m)}</li>" for m in kyc_missing) + "</ul>"
-    others = [a for a in annex if a["group"] != "KYC documents"]
-    out += "<h1>15. Other documents relied on</h1>"
-    out += table(["ID", "Group", "File", "In this report"],
-                 [[e(a["key"]), e(a["group"]), e(a["filename"]), e(a["where"])] for a in others])
-    return out
+def _other_documents(annex):
+    return "<h1>14. Other documents relied on</h1>" + table(
+        ["ID", "Group", "File", "In this report"],
+        [[e(a["key"]), e(a["group"]), e(a["filename"]), e(a["where"])] for a in annex])
 
 
 def _declaration(info):
-    return ("<h1>16. Basis of preparation and declaration</h1>"
-            "<ul><li>This note is prepared from documents supplied by the borrower, listed in sections 14 and 15 and "
-            "attached as annexures.</li>"
+    return ("<h1>15. Basis of preparation and declaration</h1>"
+            "<ul><li>This note is prepared from documents supplied by the borrower, listed in sections 1, 2 and 14 and "
+            "attached.</li>"
             "<li>Figures were read from those documents (automatically, then reviewed); where they differ, the original "
             "documents prevail.</li>"
             "<li>KYC documents are attached as received. Their verification, credit bureau and regulatory checks "
             "(section 12), legal scrutiny and valuation are for the bank.</li>"
-            "<li>Projections assume the growth, tax and utilisation stated in section 10; actual results may differ.</li>"
+            "<li>Projections assume the growth, tax and utilisation stated in section 7; actual results may differ.</li>"
             "<li>The terms in section 13 are suggestions; the bank's sanction terms prevail.</li></ul>"
             '<p style="margin-top:24pt"></p>' +
             table([], [["<b>Prepared by</b>", e(info.get("prepared_by")), "<b>Signature</b>", "<br><br>"],
@@ -688,61 +694,98 @@ def _as_pdf(data: bytes, filename: str):
     return None, (f".{ext} file - included in the credit file ZIP" if ext else "unknown file type")
 
 
+def _attach(group: str, files: list, code: str, where: str, title: str) -> list:
+    """Plan for embedding files [(key, filename, bytes, label)]: opens each one and says where it will be."""
+    out = []
+    for n, (key, fname, data, label) in enumerate(files, 1):
+        doc, why = _as_pdf(data, fname) if data else (None, None)
+        c = f"{code}{n}"
+        out.append({"key": key, "group": group, "filename": fname, "doc": doc, "label": label, "code": c,
+                    "where": (where.format(c) if doc else f"Not embedded: {why}") if data else
+                    "Listed only (file not uploaded)",
+                    "title": title.format(c, label or fname)})
+    return out
+
+
 def build_pdf(s: dict, info: dict, kyc_list: list, kyc_missing: list, other_docs: dict,
               schedules: dict | None = None, gst_meta: dict | None = None) -> bytes:
     """s: steps.summary.build(). info: bank, branch, prepared_by, reference, date, recommendation.
     kyc_list: kyc_step.kyc_docs(). other_docs: {group: [(doc_id, filename, bytes)]}.
     schedules: {facility id: repayment schedule} for the yearly tables."""
     b = s["case"]["borrower"]
-    # Annexure plan first, so the document index can say where each file is.
-    groups = [("KYC documents", [(d["doc_id"], d["filename"].rsplit("/", 1)[-1], d["data"],
-                                  " · ".join(x for x in (kyc.ALL_KINDS.get(d["doc_type"], d["doc_type"]).split(" (")[0],
-                                                         d.get("person")) if x)) for d in kyc_list])]
-    groups += [(g, [(i, f.rsplit("/", 1)[-1], data, "") for i, f, data in files]) for g, files in other_docs.items()]
+    entity, person = KYC_TITLES[kyc.family(b["constitution"])]
+
+    def is_personal(d):
+        return bool(d.get("person")) or d["doc_type"] in kyc.PERSON_DOCS
+
+    def kyc_files(docs):
+        return [(d["doc_id"], d["filename"].rsplit("/", 1)[-1], d["data"],
+                 " · ".join(x for x in (kyc.ALL_KINDS.get(d["doc_type"], d["doc_type"]).split(" (")[0], d.get("person"))
+                            if x)) for d in docs]
+
+    entity_docs = [d for d in kyc_list if not is_personal(d)]
+    personal = sorted(filter(is_personal, kyc_list), key=lambda d: d.get("person") or "")
+    entity_annex = _attach(f"{entity} KYC", kyc_files(entity_docs), "CK", "Attached after this section ({})",
+                           f"{entity} KYC {{}} — {{}}")
+    person_annex = _attach(f"{person} KYC", kyc_files(personal), "DK", "Attached after this section ({})",
+                           f"{person} KYC {{}} — {{}}")
     annex = []
-    for gi, (group, files) in enumerate(groups):
-        letter = "ABCDEFGH"[gi]
-        for n, (key, fname, data, label) in enumerate(files, 1):
-            doc, why = _as_pdf(data, fname) if data else (None, None)
-            where = (f"Annexure {letter}{n}" if doc else f"Not embedded: {why}") if data else                 "Listed only (file not uploaded)"
-            annex.append({"key": key, "group": group, "filename": fname, "doc": doc, "label": label,
-                          "code": f"{letter}{n}", "where": where})
+    for letter, (group, files) in zip("ABCDEFGH", other_docs.items()):
+        one = group[:-1] if group.endswith("s") else group
+        annex += _attach(group, [(i, f.rsplit("/", 1)[-1], data, "") for i, f, data in files], letter, "Annexure {}",
+                         f"Annexure {{}} — {one}: {{}}")
+    ref = {a["key"]: a for a in entity_annex + person_annex}
 
-    body = [_summary(s, info), _borrower(s, people_on_file(s, kyc_list), gst_meta or {}), _proposal(s), _assessment(s),
-            _financials(s), _banking(s), _gst(s), _itr(s), _security(s), _repayment(s, schedules), _risks(s),
-            _checks_and_terms(s), _documents(s, kyc_list, kyc_missing, annex), _declaration(info)]
-    body_html = "".join(body)
+    parts = [
+        ("html", [_company_kyc(s, entity_docs, ref, kyc_missing, gst_meta or {}, entity)]), ("docs", entity_annex),
+        ("html", [_director_kyc(people_on_file(s, kyc_list), personal, ref, person)]), ("docs", person_annex),
+        ("html", [_financials(s), _gst(s), _proposal(s) + _assessment(s), _security(s), _repayment(s, schedules),
+                  _banking(s), _itr(s) + _summary(s, info), _risks(s), _checks(s), _terms(s) + _other_documents(annex),
+                  _declaration(info)]),
+        ("annex", annex),
+    ]
+    parts = [(kind, _render(x) if kind == "html" else x) for kind, x in parts]
+    n_entries = sum(lvl == 1 for kind, x in parts if kind == "html" for lvl, _, _ in x[1]) + 1
+    n_cover = fitz.open("pdf", _render([_cover(s, info, [("x", 0)] * n_entries)])[0]).page_count
 
-    # Pass 1 for page numbers, pass 2 with the contents page filled in.
-    _, heads = _render([_cover(s, info), _toc([("x", 0)] * 20), body_html])
-    heads = [(lvl, t.replace("\u200b", ""), p) for lvl, t, p in heads]
-    entries = [(t, p) for lvl, t, p in heads if lvl == 1 and t != "Contents"]
-    pdf, heads = _render([_cover(s, info), _toc(entries + [("Annexures", "")]), body_html])
-
-    out = fitz.open("pdf", pdf)
-    n_report = out.page_count
-    toc = [[1, "Cover", 1]] + [[lvl, t.replace("\u200b", ""), p] for lvl, t, p in heads]
-    annex_start = None
-    for a in annex:
-        if a["doc"] is None:
+    # Stitch the body together, keeping the page number of each heading and document.
+    body = fitz.open()
+    toc, entries, footers, stamps = [[1, "Cover", 1]], [], list(range(1, n_cover)), []
+    for kind, x in parts:
+        if kind == "html":
+            pdf, heads = x
+            first = n_cover + body.page_count
+            for lvl, title, p in heads:
+                title = title.replace("\u200b", "")
+                toc.append([lvl, title, first + p])
+                if lvl == 1:
+                    entries.append((title, first + p))
+            part = fitz.open("pdf", pdf)
+            body.insert_pdf(part)
+            footers += range(first, n_cover + body.page_count)
+            part.close()
             continue
-        start = out.page_count
-        out.insert_pdf(a["doc"])
-        a["doc"].close()
-        if annex_start is None:
-            annex_start = start + 1
-            toc.append([1, "Annexures", annex_start])
-        title = f"Annexure {a['code']} — {a['group'][:-1] if a['group'].endswith('s') else a['group']}: " \
-                f"{a['label'] or a['filename']}"
-        toc.append([2, f"{a['code']} {a['label'] or a['filename']}", start + 1])
-        for pno in range(start, out.page_count):
-            _stamp(out[pno], escape(f"{title} · {a['filename']} · page {pno - start + 1} of {out.page_count - start}"),
-                   top=True)
+        for a in x:
+            if a["doc"] is None:
+                continue
+            start = n_cover + body.page_count
+            if kind == "annex" and entries[-1][0] != "Annexures":
+                toc.append([1, "Annexures", start + 1])
+                entries.append(("Annexures", start + 1))
+            body.insert_pdf(a["doc"])
+            n = n_cover + body.page_count - start
+            toc.append([2, f"{a['code']} {a['label'] or a['filename']}", start + 1])
+            stamps += [(start + i, escape(f"{a['title']} · {a['filename']} · page {i + 1} of {n}")) for i in range(n)]
+            a["doc"].close()
+
+    out = fitz.open("pdf", _render([_cover(s, info, entries)])[0])
+    out.insert_pdf(body)
+    body.close()
+    for pno, text in stamps:
+        _stamp(out[pno], text, top=True)
     name = escape(b["name"] or "Borrower")
     total = out.page_count
-    for pno in range(n_report):
-        if pno == 0:
-            continue
+    for pno in footers:
         _stamp(out[pno], f'<table style="width:100%"><tr><td>{name} — Credit Appraisal Memorandum</td>'
                          f'<td style="text-align:right">Page {pno + 1} of {total}</td></tr></table>', top=False)
     out.set_toc(toc)

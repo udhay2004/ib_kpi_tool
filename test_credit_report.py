@@ -5,11 +5,13 @@ import logging
 import zipfile
 
 import fitz
+import pandas as pd
 import pytest
 
 logging.getLogger("streamlit").setLevel(logging.ERROR)
 
 import credit_report as cr  # noqa: E402
+import kpis  # noqa: E402
 from common import init_state, reset_all, ss  # noqa: E402
 from demo_data import demo_case, demo_docs, demo_kyc, demo_security_docs  # noqa: E402
 
@@ -62,15 +64,19 @@ def test_report_has_every_section_and_annexures(demo):
                                                              ("D02", "bank.xlsx", b"PK\x03\x04")]})
     doc = fitz.open("pdf", pdf)
     toc = [t for _, t, _ in doc.get_toc()]
-    for n, title in enumerate(["Proposal at a glance", "Borrower profile", "Proposed facilities", "Assessment of limits",
-                               "Financial analysis", "Banking conduct", "GST returns", "Income tax returns", "Security",
-                               "Repayment capacity", "Risks", "Compliance checks", "Suggested terms", "KYC documents",
-                               "Other documents", "Basis of preparation"], 1):
+    for n, title in enumerate(["Company KYC", "Director KYC", "Financials", "GST", "Proposed plan", "Security", "Repayment",
+                               "Banking conduct", "Income tax returns", "Overall assessment", "Risks",
+                               "Compliance checks", "Suggested terms", "Other documents", "Basis of preparation"], 1):
         assert any(t.startswith(f"{n}. {title}") for t in toc), title
     assert "Annexures" in toc
     text = _text(doc)
-    # every annexure page is stamped; 2 + 1 + 3 annexure pages after the report
-    assert text.count("Annexure A1 —") == 2 and text.count("Annexure B1 —") == 3 and "Annexure A10 —" in text
+    # every attached page is stamped: KYC inside its section, the rest as annexures
+    assert text.count("Company KYC CK1 —") == 2 and text.count("Annexure A1 —") == 3 and "Director KYC DK2 —" in text
+    pages = {t: p for _, t, p in doc.get_toc()}
+    contents = doc[0].get_text("words")  # the page number sits at the right of its title on the cover
+    assert any(w[4] == str(pages["3. Financials — last 2 years"]) and w[0] > cr.BODY.x1 - 40 for w in contents)
+    assert pages["1. Company KYC"] < pages["CK1 Certificate of incorporation"] < pages["2. Director KYC"] \
+        < pages["DK2 Aadhaar · Director A"] < pages["3. Financials — last 2 years"]
     assert "Balance sheet 3" in text and "Certificate 2" in text
     assert "Demo Polymers Pvt Ltd" in text and "Comfortable" in text and "Test Bank" in text
     assert "CRILC" in text and "CERSAI" in text  # exposure >= 5 Cr, hypothecated / mortgaged assets
@@ -78,6 +84,22 @@ def test_report_has_every_section_and_annexures(demo):
     assert "included in the credit file ZIP" in text  # xlsx listed, not embedded
     for page in doc[:4]:  # tables stay inside the right margin
         assert max(b[2] for b in page.get_text("blocks")) <= cr.BODY.x1 + 3
+
+
+def test_financials_keep_two_years_and_gst_twelve_months(demo):
+    s = demo.build()
+    fin = s["res"]["tables"]["financials"]
+    old = fin.iloc[[0]].copy()
+    old.index = ["FY2010-11"]
+    s["res"]["tables"]["financials"] = pd.concat([old, fin])
+    gst = s["res"]["tables"]["gst"]
+    extra = gst.iloc[[0]].assign(period="2010-01")
+    annual = gst.iloc[[0]].assign(period="2010-11", return_type="GSTR-9")
+    s["res"]["tables"]["gst"] = pd.concat([extra, annual, gst])
+    text = _text(fitz.open("pdf", cr.build_pdf(s, {}, [], [], {})))
+    assert "FY2010-11" not in text and "2010-01" not in text and "GSTR-9" not in text
+    recent, m = kpis.gst_last_12_months(s["res"]["tables"]["gst"])
+    assert recent["period"].nunique() <= 12 and m["months_filed"] == recent["period"].nunique()
 
 
 def test_locked_pdf_is_listed_not_embedded(demo):
