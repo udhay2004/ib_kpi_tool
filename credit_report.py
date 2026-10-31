@@ -12,7 +12,7 @@ Pure module (no Streamlit): build_pdf() takes the case summary from steps.summar
 import io
 import re
 from datetime import datetime
-from html import escape
+from html import escape as _escape
 
 import fitz
 import pandas as pd
@@ -96,6 +96,10 @@ GST_KPI_LABELS = [
 
 # ---------------------------------------------------------------- formatting
 
+def escape(v) -> str:
+    return _escape(str(v))
+
+
 def _na(v) -> bool:
     try:
         return v is None or pd.isna(v)
@@ -172,8 +176,9 @@ def kv_table(pairs: list) -> str:
 
 
 def status(st_: str | None, text: str | None = None) -> str:
-    if not st_:
-        return e(text)
+    """Coloured word. Blank cells are None or NaN depending on the pandas version, so check with _na."""
+    if _na(st_) or not st_:
+        return e(text) if text else ""
     return f'<span class="{st_}">{escape(text or STATUS_WORD.get(st_, st_))}</span>'
 
 
@@ -306,8 +311,8 @@ def _assessment(s):
     for _, r in fac.iterrows():
         ok = r["Within eligibility"]
         rows.append([e(r["Facility"]), e(r["Assessment"]), lakh(r["Amount (₹)"]), lakh(r["Eligible (₹)"]),
-                     status(None if ok is None else "good" if ok == "Yes" else "critical",
-                            "—" if ok is None else "Within" if ok == "Yes" else "Exceeds")])
+                     status(None if _na(ok) else "good" if ok == "Yes" else "critical",
+                            "—" if _na(ok) else "Within" if ok == "Yes" else "Exceeds")])
         cls.append("High" if ok == "No" else None)
     out += table(["Facility", "Method", "Requested (₹ lakh)", "Assessed (₹ lakh)", "Result"], rows, num_cols=(2, 3),
                  row_class=cls)
@@ -457,13 +462,13 @@ def _repayment(s, schedules):
     m = cap["metrics"]
     out += "<h2>Measures</h2>" + table(
         ["Measure", "Value", "Benchmark / note", "Assessment"],
-        [[e(r["Measure"]), e(r["Value"]), e(r["Benchmark / note"]), status(r.get("Status")) if r.get("Status") else ""]
+        [[e(r["Measure"]), e(r["Value"]), e(r["Benchmark / note"]), status(r.get("Status"))]
          for _, r in m.iterrows()])
     stv = cap["stress"]
     out += "<h2>Stress tests</h2>" + table(
         ["Scenario", "Minimum DSCR", "Average DSCR", "Assessment"],
         [[e(r["Scenario"]), e(val(r["Minimum DSCR"], "x")), e(val(r["Average DSCR"], "x")),
-          status(r.get("Status")) if r.get("Status") else ""] for _, r in stv.iterrows()], num_cols=(1, 2))
+          status(r.get("Status"))] for _, r in stv.iterrows()], num_cols=(1, 2))
     if dt is not None and not dt.empty:
         out += "<h2>Projected debt service coverage (₹ lakh)</h2>" + table(
             ["Year", "Cash accrual", "Available for debt service", "New interest", "New principal", "Existing debt service",
