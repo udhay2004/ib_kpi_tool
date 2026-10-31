@@ -104,3 +104,17 @@ def test_zip_carries_the_pdf(monkeypatch):
     monkeypatch.setattr(summary.kyc_step, "kyc_docs", lambda: [])
     names = zipfile.ZipFile(io.BytesIO(summary.credit_file_zip(b"xls", "Acme", pdf=b"%PDF-1.7"))).namelist()
     assert names[:2] == ["Acme_credit_report.pdf", "Acme_credit_note.xlsx"]
+
+
+def test_blank_cells_as_nan_do_not_break_the_report(demo):
+    # pandas 3 stores blank text cells as NaN (a float), pandas 2 as None
+    from steps import kyc_step
+    s = demo.build()
+    nan = float("nan")
+    s["capacity"]["metrics"]["Status"] = s["capacity"]["metrics"]["Status"].astype(object).where(lambda c: c.notna(), nan)
+    s["capacity"]["metrics"].loc[1, "Status"] = nan
+    s["facilities"] = s["facilities"].astype({"Within eligibility": object})
+    s["facilities"].loc[0, "Within eligibility"] = nan
+    text = _text(fitz.open("pdf", cr.build_pdf(s, {}, kyc_step.kyc_docs(), [], {})))
+    assert "nan" not in text.lower().split() and "Exceeds" not in text
+    assert cr.status(nan) == "" and cr.status(None) == ""
