@@ -41,26 +41,26 @@ Always check the **Review** tab: the parser is rule-based and unusual layouts ca
 
 ## The credit report (PDF) for the bank
 
-One PDF in the usual credit appraisal memorandum (CAM) order. There is no single RBI format — each bank has its own — so the
-sections follow what bank credit notes commonly contain:
+One PDF, in this order:
 
-1. Proposal at a glance — key numbers vs benchmarks, facilities, repayment verdict, high findings, your recommendation
-2. Borrower profile — constitution, industry, MSME class, GSTIN, bank accounts, promoters / directors / guarantors
-3. Proposed facilities and terms · 4. Assessment of limits (turnover method / MPBF / project cost / NFB)
-5. Financial analysis — summary financials and ratios by year · 6. Banking conduct — account KPIs, month-wise table,
-   largest payers · 7. GST returns · 8. Promoters' ITRs
-9. Security — each item with charge, value, margin, realisable value; cover; documents needed to create the charge
-10. Repayment capacity — verdict, written observations, measures, stress tests, DSCR by year, repayment schedules
-11. Risks and mitigants — every finding from all steps
-12. Compliance checks for the bank — credit bureau, RBI wilful-defaulter list, CKYC, GSTIN, CRILC (≥ ₹5 Cr), MCA charges,
-    Udyam, legal / valuation, CERSAI, ECGC (exports), site visit — with a blank column for the bank's remarks
-13. Suggested terms and conditions — before and after disbursement
-14. KYC document index (and what is still missing) · 15. Other documents relied on · 16. Basis of preparation and signature
+- **Cover** — company name first, then proposal details and contents
+1. Company KYC — company details, document list, what is still missing, then the documents themselves
+2. Director KYC — directors / promoters / guarantors, document list, then the documents themselves
+3. Financials — last 2 years: summary financials and ratios
+4. GST — last 12 months: measures for the period, return-wise table, largest customers
+5. Proposed plan — facilities, terms and assessment of limits (turnover method / MPBF / project cost / NFB)
+6. Security — each item with charge, value, margin, realisable value; cover; documents needed to create the charge
+7. Repayment — verdict, written observations, measures, stress tests, DSCR by year, repayment schedules
 
-Then the **annexures**: every KYC, financial and security file uploaded, merged into the same PDF (PDFs as they are,
-photos / scans on A4 pages), each page stamped with its annexure number. Excel, Word and CSV files are listed and go in the
-ZIP instead. Password-protected PDFs must be unlocked in the app first. The PDF has bookmarks for every section and
-annexure. KYC is attached as received; verification and the checks in section 12 are for the bank.
+Supporting sections follow: 8. Banking conduct · 9. Promoters' ITRs · 10. Overall assessment and your recommendation ·
+11. Risks and mitigants · 12. Compliance checks for the bank — credit bureau, RBI wilful-defaulter list, CKYC, GSTIN,
+CRILC (≥ ₹5 Cr), MCA charges, Udyam, legal / valuation, CERSAI, ECGC (exports), site visit, with a blank column for the
+bank's remarks · 13. Suggested terms and conditions · 14. Other documents relied on · 15. Basis of preparation and signature
+
+Then the **annexures**: the financial and security files. All files are merged into the same PDF (PDFs as they are,
+photos / scans on A4 pages), each page stamped with its reference (CK1, DK1, A1...). Excel, Word and CSV files are listed
+and go in the ZIP instead. Password-protected PDFs must be unlocked in the app first. The PDF has bookmarks for every
+section and document. KYC is attached as received; verification and the checks in section 12 are for the bank.
 
 ## Run locally
 

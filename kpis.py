@@ -296,46 +296,60 @@ def bank_kpis(bank: pd.DataFrame, counterparties: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _gst_measures(grp: pd.DataFrame) -> dict:
+    """Turnover from GSTR-3B (falls back to GSTR-1), compliance and ITC checks for a set of returns."""
+    rt = grp["return_type"].fillna("").str.upper()
+    b3 = grp[rt.str.contains("3B")]
+    r1 = grp[rt.str.contains("GSTR-1|GSTR1", regex=True)]
+    base = b3 if not b3.empty else r1 if not r1.empty else grp
+    turnover = base[["taxable_turnover", "exempt_nil_turnover", "export_turnover"]].sum(axis=1, min_count=1).sum(min_count=1)
+    late = 0
+    for _, r in grp.iterrows():
+        try:
+            if r["filing_date"] and r["due_date"] and date.fromisoformat(r["filing_date"]) > date.fromisoformat(r["due_date"]):
+                late += 1
+        except (ValueError, TypeError):
+            pass
+    t1, t3 = r1["taxable_turnover"].sum(min_count=1), b3["taxable_turnover"].sum(min_count=1)
+    itc = b3["itc_claimed"].sum(min_count=1)
+    itc2b = b3["itc_available_gstr2b"].sum(min_count=1) if "itc_available_gstr2b" in b3 else None
+    months = base["period"].nunique()
+    return {
+        "months_filed": months,
+        "gst_turnover": turnover,
+        "avg_monthly_turnover": turnover / months if months else None,
+        "tax_paid_cash": base["tax_paid_cash"].sum(min_count=1),
+        "itc_claimed": itc,
+        "itc_available_2b": itc2b,
+        "itc_excess_over_2b": _div(itc - itc2b, itc2b) if _ok(itc) and _ok(itc2b) else None,
+        "gstr1_vs_3b_gap": _div(t1 - t3, t3) if _ok(t1) and _ok(t3) else None,
+        "late_filings": late,
+    }
+
+
 def gst_kpis(gst: pd.DataFrame, customers: pd.DataFrame) -> pd.DataFrame:
-    """Turnover per FY from GSTR-3B (falls back to GSTR-1), compliance and ITC checks."""
+    """GST measures per FY."""
     g = gst.copy()
     g["fy"] = g["period"].map(_fy_of)
     g = g[g["fy"].notna()]
-    rows = []
-    for fy, grp in g.groupby("fy"):
-        rt = grp["return_type"].fillna("").str.upper()
-        b3 = grp[rt.str.contains("3B")]
-        r1 = grp[rt.str.contains("GSTR-1|GSTR1", regex=True)]
-        base = b3 if not b3.empty else r1 if not r1.empty else grp
-        turnover = base[["taxable_turnover", "exempt_nil_turnover", "export_turnover"]].sum(axis=1, min_count=1).sum(min_count=1)
-        late = 0
-        for _, r in grp.iterrows():
-            try:
-                if r["filing_date"] and r["due_date"] and date.fromisoformat(r["filing_date"]) > date.fromisoformat(r["due_date"]):
-                    late += 1
-            except (ValueError, TypeError):
-                pass
-        t1, t3 = r1["taxable_turnover"].sum(min_count=1), b3["taxable_turnover"].sum(min_count=1)
-        itc = b3["itc_claimed"].sum(min_count=1)
-        itc2b = b3["itc_available_gstr2b"].sum(min_count=1) if "itc_available_gstr2b" in b3 else None
-        months = base["period"].nunique()
-        rows.append({
-            "fiscal_year": fy,
-            "months_filed": months,
-            "gst_turnover": turnover,
-            "avg_monthly_turnover": turnover / months if months else None,
-            "tax_paid_cash": base["tax_paid_cash"].sum(min_count=1),
-            "itc_claimed": itc,
-            "itc_available_2b": itc2b,
-            "itc_excess_over_2b": _div(itc - itc2b, itc2b) if _ok(itc) and _ok(itc2b) else None,
-            "gstr1_vs_3b_gap": _div(t1 - t3, t3) if _ok(t1) and _ok(t3) else None,
-            "late_filings": late,
-        })
-    out = pd.DataFrame(rows)
+    out = pd.DataFrame([{"fiscal_year": fy, **_gst_measures(grp)} for fy, grp in g.groupby("fy")])
     if not customers.empty and not out.empty:
         total = out["gst_turnover"].sum()
         out["top5_customer_share"] = _div(customers.nlargest(5, "taxable_value")["taxable_value"].sum(), total)
     return out
+
+
+def gst_last_12_months(gst: pd.DataFrame) -> tuple[pd.DataFrame, dict | None]:
+    """Monthly returns in the 12 calendar months ending at the latest month read, and their measures.
+    Annual returns (GSTR-9, period YYYY-YY) are left out. Measures are None when there are no monthly returns."""
+    is_month = gst["period"].astype(str).str.fullmatch(r"\d{4}-(0[1-9]|1[0-2])")
+    monthly = gst[is_month & ~gst["return_type"].fillna("").astype(str).str.contains("9")]
+    if monthly.empty:
+        return monthly, None
+    last = monthly["period"].max()
+    first = (pd.Period(last, "M") - 11).strftime("%Y-%m")
+    recent = monthly[monthly["period"] >= first]
+    return recent, {"period": f"{recent['period'].min()} to {last}", **_gst_measures(recent)}
 
 
 # ---------------------------------------------------------------- checks / flags
