@@ -450,6 +450,8 @@ def parse_gstr3b(text: str) -> dict | None:
     p["tax_paid_cash"] = sum(x for x in cash if x) if cash else None
     fd = re.search(r"(?:date of (?:arn|filing)|filed on|arn date)\s*[:\-]?\s*(\S+)", text, re.I)
     p["filing_date"] = to_date(fd.group(1)).isoformat() if fd and to_date(fd.group(1)) else None
+    arn = re.search(r"\bARN\b[^A-Z0-9\n]*([A-Z]{2}[0-9A-Z]{13})\b", text)
+    p["arn"] = arn.group(1) if arn else None
     nm = (m % 12) + 1
     p["due_date"] = date(y + (1 if m == 12 else 0), nm, 20).isoformat()
     if p["taxable_turnover"] is None:

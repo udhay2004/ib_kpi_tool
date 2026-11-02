@@ -21,7 +21,7 @@ def init_state():
         "demo": None, "static_kyc": None, "static_sec": None, "last_run": {},
         "case": {"borrower": {"name": "", "constitution": "Private limited company", "industry": "",
                               "msme_class": "Not registered", "years_in_business": 0, "existing_exposure": 0.0},
-                 "facilities": [], "securities": [], "repay": {},
+                 "facilities": [], "securities": [], "repay": {}, "client": {},
                  "dscr": {"growth_pct": 5.0, "tax_pct": 25.0, "wc_utilisation_pct": 80.0}},
     }
     for k, v in defaults.items():

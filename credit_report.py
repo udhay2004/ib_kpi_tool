@@ -57,6 +57,9 @@ ul {margin: 2pt 0 4pt 0; padding-left: 13pt;} li {margin-bottom: 2pt;}
 KYC_TITLES = {"company": ("Company", "Director"), "llp": ("LLP", "Partner"), "partnership": ("Firm", "Partner"),
               "proprietorship": ("Business", "Proprietor"), "trust": ("Trust", "Trustee")}
 
+BRAND_HEADER = "BUSINESS & CORPORATE DEBT FUNDING"
+BRAND_FOOTER = "Connect Ventures Inc.  |  +91 99999 81613  /  +1 (302) 214 1717  |  www.theconnectventures.com"
+
 SEV_ORDER = {"High": 0, "Medium": 1, "Low": 2}
 STATUS_WORD = {"good": "Comfortable", "warning": "Watch", "critical": "Concern"}
 
@@ -186,6 +189,36 @@ def status(st_: str | None, text: str | None = None) -> str:
     return f'<span class="{st_}">{escape(text or STATUS_WORD.get(st_, st_))}</span>'
 
 
+def mask_aadhaar(v) -> str:
+    """Only the last 4 digits are ever printed (Aadhaar Act: the full number may not be displayed or stored)."""
+    digits = re.sub(r"\D", "", "" if _na(v) else str(v))
+    return f"XXXX XXXX {digits[-4:]}" if len(digits) >= 4 else "—"
+
+
+def existing_emi(client: dict) -> float:
+    """Monthly EMIs that stay after this loan: marked to count, and not being closed with it."""
+    return sum(o.get("EMI ₹") or 0 for o in client.get("obligations") or []
+               if not _na(o.get("EMI ₹")) and o.get("Count in FOIR") != "N" and o.get("Close with new loan") != "Y")
+
+
+def foir(s) -> dict | None:
+    """Post-proposal FOIR: (existing + proposed monthly EMI) / monthly income, income being (PAT + depreciation) / 12."""
+    res, dt = s["res"], s["dscr"]
+    fin = res["tables"]["financials"] if res is not None else pd.DataFrame()
+    if fin.empty or dt is None or dt.empty or not {"profit_after_tax", "depreciation"} <= set(fin.columns):
+        return None
+    last = fin.iloc[-1]
+    if _na(last["profit_after_tax"]) or _na(last["depreciation"]):
+        return None
+    income = (last["profit_after_tax"] + last["depreciation"]) / 12
+    client = s["case"].get("client") or {}
+    existing = existing_emi(client) if client.get("obligations") else float(dt["existing_debt_service"].iloc[0]) / 12
+    proposed = float((dt["new_interest"] + dt["new_principal"]).max()) / 12
+    if income <= 0:
+        return None
+    return {"foir": (existing + proposed) / income, "income": income, "existing": existing, "proposed": proposed}
+
+
 # ---------------------------------------------------------------- sections
 
 def _cover(s, info, contents):
@@ -197,7 +230,7 @@ def _cover(s, info, contents):
             ("Submitted to", e(", ".join(x for x in (info.get("bank"), info.get("branch")) if x) or "—")),
             ("Prepared by", e(info.get("prepared_by"))), ("Reference", e(info.get("reference"))),
             ("Date", e(info.get("date") or datetime.now().strftime("%d %b %Y")))]
-    return (f'<div class="cover-name">{name}</div><div class="cover-sub">Credit Appraisal Memorandum</div>'
+    return (f'<div class="cover-name">M/s {name}</div><div class="cover-sub">Brief Profile of the Company and Credit Report</div>'
             f'{kv_table(rows)}<h2>Contents</h2><div class="toc">'
             + table([], [[escape(t_), str(p)] for t_, p in contents], num_cols=(1,), widths=[0.9, 0.1], head_row=False)
             + '</div><p class="muted" style="margin-top:14pt">Prepared from documents supplied by the borrower. Figures '
@@ -264,11 +297,28 @@ def _kyc_table(docs, ref):
 
 def _company_kyc(s, docs, ref, missing, gst_meta, title):
     b = s["case"]["borrower"]
-    pairs = [("Name", e(b["name"])), ("Constitution", e(b["constitution"])), ("Industry / activity", e(b["industry"])),
-             ("MSME classification (Udyam)", e(b["msme_class"])), ("Years in business", e(b["years_in_business"])),
-             ("Existing bank exposure", e(inr(b.get("existing_exposure"))))]
+    c = s["case"].get("client") or {}
+    pairs = [(f"{title} name", "M/s " + e(b["name"])), ("Address", e(c.get("address"))), ("City & PIN code", e(c.get("city_pin"))),
+             ("Contact person", e(c.get("contact_person"))), ("Contact number", e(c.get("mobile"))), ("Email ID", e(c.get("email"))),
+             ("Date of incorporation", e(c.get("incorporated"))), ("URL / website", e(c.get("website"))),
+             ("No. of employees", e(c.get("employees"))), ("Constitution", e(b["constitution"])),
+             ("Nature of business", e(c.get("nature") or b["industry"])), ("Bank particulars", e(c.get("bank_particulars"))),
+             ("Product", e(", ".join(dict.fromkeys(f["product"] for f in s["case"]["facilities"])))),
+             ("MSME classification (Udyam)", e(b["msme_class"])), ("Udyam registration number", e(c.get("udyam_no"))),
+             ("Years in business", e(b["years_in_business"])), ("Existing bank exposure", e(inr(b.get("existing_exposure"))))]
     pairs += [(k, e(v)) for k, v in gst_meta.items()]
-    out = f"<h1>1. {title} KYC</h1>" + kv_table(pairs) + "<h2>Documents</h2>"
+    pairs += [("Decision maker", e(c.get("decision_maker"))), ("Decision maker contact", e(" / ".join(
+        x for x in (c.get("dm_mobile"), c.get("dm_email")) if x)))]
+    out = f"<h1>1. {title} KYC</h1>" + kv_table(pairs)
+    if c.get("customers"):
+        out += "<h2>List of major customers</h2>" + table(
+            ["Customer", "% of sales", "Credit days"],
+            [[e(r.get("Name")), e(r.get("% of sales")), e(r.get("Credit days"))] for r in c["customers"]], num_cols=(1, 2))
+    if c.get("suppliers"):
+        out += "<h2>Major suppliers</h2>" + table(
+            ["Supplier", "% of purchases", "Credit days"],
+            [[e(r.get("Name")), e(r.get("% of purchases")), e(r.get("Credit days"))] for r in c["suppliers"]], num_cols=(1, 2))
+    out += "<h2>Documents</h2>"
     out += '<p class="muted">Attached as received from the borrower. Not verified by the preparer.</p>'
     out += _kyc_table(docs, ref)
     if missing:
@@ -276,8 +326,16 @@ def _company_kyc(s, docs, ref, missing, gst_meta, title):
     return out
 
 
-def _director_kyc(people, docs, ref, title):
-    out = f"<h1>2. {title} KYC</h1><h2>{title}s, promoters and guarantors</h2>"
+def _director_kyc(s, people, docs, ref, title):
+    out = f"<h1>2. {title} KYC</h1>"
+    promoters = (s["case"].get("client") or {}).get("promoters")
+    if promoters:
+        out += f"<h2>{title} / partner / promoter details</h2>" + table(
+            ["Name", "PAN", "Aadhaar", "Mobile", "Email", "DIN", "Share %", "Passport"],
+            [[e(p.get("Name")), e(p.get("PAN")), mask_aadhaar(p.get("Aadhaar last 4")), e(p.get("Mobile")), e(p.get("Email")),
+              e(p.get("DIN")), e(p.get("Share %")), e(p.get("Passport no"))] for p in promoters],
+            widths=[0.17, 0.12, 0.14, 0.12, 0.17, 0.1, 0.07, 0.11])
+    out += f"<h2>{title}s, promoters and guarantors</h2>"
     out += table(["Name", "Role / documents on file"], [[e(p), e(r)] for p, r in people.items()]) if people else \
         '<p class="muted">No individuals named on the KYC documents or guarantees.</p>'
     return out + "<h2>Documents</h2>" + _kyc_table(docs, ref)
@@ -331,17 +389,46 @@ def _assessment(s):
     return out
 
 
+def _sheet_financials(fin, years, ytd) -> str:
+    """The financials table of the loan detail sheet, with a YTD column when one was entered."""
+    def col(k):
+        return fin[k] if k in fin.columns else pd.Series(index=fin.index, dtype=float)
+
+    def growth(k):
+        cols = list(fin.index)
+        out = []
+        for y in years:
+            i, c = cols.index(y), col(k)
+            prev = c.iloc[i - 1] if i else None
+            out.append("—" if _na(prev) or not prev or _na(c.iloc[i]) else f"{c.iloc[i] / prev - 1:.1%}")
+        return out
+    has_ytd = bool(ytd.get("period"))
+
+    def line(label, k, y_key=None):
+        return [label] + [lakh(col(k).get(y)) for y in years] + ([lakh(ytd.get(y_key) or None)] if has_ytd else [])
+    blank = ["—"] if has_ytd else []
+    rows = [line("Sales", "revenue_from_operations", "sales"), ["YoY growth"] + growth("revenue_from_operations") + blank,
+            line("NPBT", "profit_before_tax", "npbt"), ["YoY growth"] + growth("profit_before_tax") + blank,
+            line("Depreciation", "depreciation", "depreciation"), line("Interest on loan", "finance_cost", "interest"),
+            line("Capital / net worth", "net_worth", "net_worth"), line("Stock", "inventory", "stock"),
+            line("Debtors", "trade_receivables", "debtors"), line("Creditors", "trade_payables", "creditors")]
+    head = ["Head"] + [escape(str(y)) for y in years] + ([f"YTD {escape(ytd['period'])}"] if has_ytd else [])
+    return "<h2>Financials (₹ lakh)</h2>" + table(head, rows, num_cols=tuple(range(1, len(head))))
+
+
 def _financials(s):
     res = s["res"]
     out = "<h1>3. Financials — last 2 years</h1>"
     if res is None:
         return out + '<p class="critical">No financial statements were read.</p>'
     fin = res["tables"]["financials"]
+    client = s["case"].get("client") or {}
     if not fin.empty:
         years = list(fin.index)[-2:]
         if len(years) < 2:
             out += f'<p class="critical">Only {escape(str(years[0]))} was read; two years are needed.</p>'
-        out += "<h2>Summary financials (₹ lakh)</h2>"
+        out += _sheet_financials(fin, years, client.get("ytd") or {})
+        out += "<h2>Detailed figures (₹ lakh)</h2>"
         rows = [["Audited"] + [e("Yes" if fin.at[y, "audited"] else "No") if "audited" in fin.columns else "—"
                                for y in years]]
         for key, label in FIN_LINES:
@@ -356,6 +443,20 @@ def _financials(s):
                      [[e(r["KPI"])] + [e(val(r[y], r["unit"])) for y in years] + [f'<span class="muted">{e(r["formula"])}</span>']
                       for _, r in fk.iterrows()], num_cols=tuple(range(1, len(years) + 1)))
         out += '<p class="muted">Amounts in the ratio table are ₹ lakh.</p>'
+    if client.get("receivables"):
+        rec = client["receivables"]
+        total = sum(r.get("Amount ₹") or 0 for r in rec if not _na(r.get("Amount ₹")))
+        out += "<h2>Bills receivable</h2>" + table(
+            ["Sr. no", "Particulars", "Amount (₹)"],
+            [[str(i), e(r.get("Particulars")), val(r.get("Amount ₹"), "count")] for i, r in enumerate(rec, 1)]
+            + [["", "<b>Total</b>", f"<b>{total:,.0f}</b>"]], num_cols=(2,), widths=[0.1, 0.6, 0.3])
+    exp = {k: v for k, v in (client.get("expenses") or {}).items() if v}
+    if exp:
+        names = {"salaries": "Salaries", "rent": "Rent", "monthly_emi": "Monthly EMI", "cc_interest": "CC interest",
+                 "office": "Office expense"}
+        out += "<h2>Total fixed monthly expenses</h2>" + table(
+            ["Head", "Amount (₹)"], [[escape(names.get(k, k)), f"{v:,.0f}"] for k, v in exp.items()]
+            + [["<b>Total</b>", f"<b>{sum(exp.values()):,.0f}</b>"]], num_cols=(1,), widths=[0.7, 0.3])
     return out
 
 
@@ -405,13 +506,22 @@ def _gst(s):
             out += f'<p class="critical">Only {m["months_filed"]} of the last 12 months were read.</p>'
         out += table(["Measure (₹ lakh where amount)", "Last 12 months"],
                      [[escape(label), e(val(m.get(k), unit))] for k, label, unit in GST_KPI_LABELS if k in m], num_cols=(1,))
-    out += "<h2>Return-wise summary (₹ lakh)</h2>"
-    cols = [("period", "Period", "text"), ("return_type", "Return", "text"), ("taxable_turnover", "Taxable value", "INR"),
-            ("export_turnover", "Exports", "INR"), ("tax_paid_cash", "Tax in cash", "INR"),
-            ("itc_claimed", "ITC claimed", "INR"), ("filing_date", "Filed", "text"), ("due_date", "Due", "text")]
-    cols = [c for c in cols if c[0] in g.columns]
-    out += table([c[1] for c in cols], [[e(val(r[k], u)) for k, _, u in cols] for _, r in g.iterrows()],
-                 num_cols=tuple(i for i, c in enumerate(cols) if c[2] != "text"))
+    if m is not None:
+        rt = g["return_type"].fillna("").astype(str).str.upper()
+        b3 = g[rt.str.contains("3B")]
+        g = b3 if not b3.empty else g
+        sales = g[[c for c in ("taxable_turnover", "exempt_nil_turnover", "export_turnover") if c in g.columns]].sum(axis=1, min_count=1)
+        months = [[escape(pd.Period(r["period"], "M").strftime("%B %y").upper()), e(r.get("arn")), lakh(v), e(r.get("filing_date"))]
+                  for (_, r), v in zip(g.iterrows(), sales)]
+        out += "<h2>GST 3B (₹ lakh)</h2>" + table(
+            ["Month", "ARN no", "Sales", "Filed"], months + [["<b>Total</b>", "", f"<b>{lakh(sales.sum())}</b>", ""]],
+            num_cols=(2,), widths=[0.25, 0.35, 0.2, 0.2])
+    else:
+        cols = [("period", "Period", "text"), ("return_type", "Return", "text"), ("taxable_turnover", "Taxable value", "INR"),
+                ("filing_date", "Filed", "text")]
+        cols = [c for c in cols if c[0] in g.columns]
+        out += table([c[1] for c in cols], [[e(val(r[k], u)) for k, _, u in cols] for _, r in g.iterrows()],
+                     num_cols=tuple(i for i, c in enumerate(cols) if c[2] != "text"))
     cu = res["tables"].get("customers")
     if cu is not None and not cu.empty:
         out += "<h2>Largest customers (GST)</h2>"
@@ -471,6 +581,20 @@ def _repayment(s, schedules):
         return out + '<p class="muted">Not assessed — no facilities.</p>'
     out += (f'<div class="box">{status(cap["verdict"]["status"], cap["verdict"]["label"])} — '
             f'{e(cap["verdict"]["meaning"])}</div>')
+    obs = (s["case"].get("client") or {}).get("obligations")
+    if obs:
+        out += "<h2>Loan obligations (₹ lakh)</h2>" + table(
+            ["Sr. no", "Bank name", "Type of loan", "Loan amount", "EMI amount", "Pending", "Term", "ROI %", "EMI start"],
+            [[str(i), e(o.get("Lender")), e(o.get("Product")), lakh(o.get("Loan amount ₹")), lakh(o.get("EMI ₹")),
+              lakh(o.get("Outstanding ₹")), e(o.get("Term months")), e(o.get("ROI %")), e(o.get("EMI start"))]
+             for i, o in enumerate(obs, 1)], num_cols=(3, 4, 5, 6, 7))
+    f = foir(s)
+    if f:
+        th = kpis.THRESHOLDS["foir_max"]
+        word = status("good" if f["foir"] <= th else "critical", f"{f['foir']:.0%}")
+        out += (f'<p><b>FOIR after this proposal:</b> {word} against '
+                f'a {th:.0%} cap (income {e(inr(f["income"]))} a month from PAT + depreciation; existing EMI {e(inr(f["existing"]))}; '
+                f'proposed EMI {e(inr(f["proposed"]))}).</p>')
     out += "<h2>Observations</h2><ul>" + "".join(
         f"<li><b>{e(n['title'])}.</b> {e(n['text'])}</li>" for n in cap["notes"]) + "</ul>"
     m = cap["metrics"]
@@ -694,6 +818,15 @@ def _as_pdf(data: bytes, filename: str):
     return None, (f".{ext} file - included in the credit file ZIP" if ext else "unknown file type")
 
 
+def brand(doc, pages):
+    """Header and footer of the Connect Ventures templates on the given report pages."""
+    total = doc.page_count
+    for pno in pages:
+        _stamp(doc[pno], f'<div style="margin-left:12pt;font-weight:bold;color:#1f3864">{escape(BRAND_HEADER)}</div>', top=True)
+        _stamp(doc[pno], f'<table style="width:100%"><tr><td>{escape(BRAND_FOOTER)}</td>'
+                         f'<td style="text-align:right">Page {pno + 1} of {total}</td></tr></table>', top=False)
+
+
 def _attach(group: str, files: list, code: str, where: str, title: str) -> list:
     """Plan for embedding files [(key, filename, bytes, label)]: opens each one and says where it will be."""
     out = []
@@ -738,7 +871,7 @@ def build_pdf(s: dict, info: dict, kyc_list: list, kyc_missing: list, other_docs
 
     parts = [
         ("html", [_company_kyc(s, entity_docs, ref, kyc_missing, gst_meta or {}, entity)]), ("docs", entity_annex),
-        ("html", [_director_kyc(people_on_file(s, kyc_list), personal, ref, person)]), ("docs", person_annex),
+        ("html", [_director_kyc(s, people_on_file(s, kyc_list), personal, ref, person)]), ("docs", person_annex),
         ("html", [_financials(s), _gst(s), _proposal(s) + _assessment(s), _security(s), _repayment(s, schedules),
                   _banking(s), _itr(s) + _summary(s, info), _risks(s), _checks(s), _terms(s) + _other_documents(annex),
                   _declaration(info)]),
@@ -783,13 +916,9 @@ def build_pdf(s: dict, info: dict, kyc_list: list, kyc_missing: list, other_docs
     body.close()
     for pno, text in stamps:
         _stamp(out[pno], text, top=True)
-    name = escape(b["name"] or "Borrower")
-    total = out.page_count
-    for pno in footers:
-        _stamp(out[pno], f'<table style="width:100%"><tr><td>{name} — Credit Appraisal Memorandum</td>'
-                         f'<td style="text-align:right">Page {pno + 1} of {total}</td></tr></table>', top=False)
+    brand(out, [0] + footers)
     out.set_toc(toc)
-    out.set_metadata({"title": f"Credit Appraisal Memorandum — {b['name'] or 'Borrower'}",
+    out.set_metadata({"title": f"Credit Report — {b['name'] or 'Borrower'}",
                       "author": info.get("prepared_by") or "", "subject": "Credit proposal",
                       "creator": "Credit Appraisal Workbench"})
     data = out.tobytes(garbage=3, deflate=True)

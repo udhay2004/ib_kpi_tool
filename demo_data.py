@@ -146,6 +146,32 @@ def demo_case() -> dict:
         "repay": {"tl01": {"method": "Step-up instalments", "freq": "Monthly", "step_up_pct": 10.0,
                            "structured": "10,15,20,25,30"}},
         "dscr": {"growth_pct": 8.0, "tax_pct": 25.0, "wc_utilisation_pct": 80.0},
+        "client": {
+            "address": "Plot 14, MIDC Industrial Area, Ambernath", "city_pin": "Ambernath 421501", "contact_person": "Director A",
+            "mobile": "90000 00000", "email": "accounts@example.com", "website": "www.example.com", "incorporated": "12/04/2011",
+            "employees": "85", "udyam_no": "UDYAM-MH-00-0000000", "bank_particulars": "HDFC Bank, Ambernath, CC account",
+            "nature": "Manufacturer of flexible plastic packaging for FMCG customers.",
+            "history": "Started 2011 with one extrusion line; second line proposed.", "group_companies": "None",
+            "promoters": [
+                {"Name": "Director A", "Designation": "Managing Director", "PAN": "AAAPA0000A", "Aadhaar last 4": "1234",
+                 "Mobile": "90000 00000", "Email": "a@example.com", "DIN": "00000001", "Share %": 70.0, "Age": 52.0,
+                 "Qualification": "B.E.", "Experience yrs": 26.0, "Residence": "Owned", "CIBIL": 762.0},
+                {"Name": "Director B", "Designation": "Director", "PAN": "AAAPB0000B", "Aadhaar last 4": "5678",
+                 "Mobile": "90000 00001", "Email": "b@example.com", "DIN": "00000002", "Share %": 30.0, "Age": 47.0,
+                 "Qualification": "MBA", "Experience yrs": 18.0, "Residence": "Owned", "CIBIL": 741.0}],
+            "obligations": [
+                {"Lender": "HDFC Bank", "Product": "Term loan", "Security": "Secured", "Loan amount ₹": 300 * L, "EMI ₹": 6.5 * L,
+                 "Outstanding ₹": 180 * L, "Term months": 60.0, "ROI %": 10.5, "EMI start": "05/2023", "Months left": 30.0,
+                 "Count in FOIR": "Y", "Close with new loan": "N"}],
+            "customers": [{"Name": "Apex Packaging Ltd", "% of sales": 21.0, "Credit days": 60.0},
+                          {"Name": "Nova Retail Pvt Ltd", "% of sales": 13.0, "Credit days": 45.0}],
+            "suppliers": [{"Name": "Reliance Polymers", "% of purchases": 45.0, "Credit days": 30.0}],
+            "receivables": [{"Particulars": "Apex Packaging Ltd", "Amount ₹": 210 * L},
+                            {"Particulars": "Nova Retail Pvt Ltd", "Amount ₹": 130 * L}],
+            "expenses": {"salaries": 11 * L, "rent": 0.0, "monthly_emi": 6.5 * L, "cc_interest": 2.4 * L, "office": 1.1 * L},
+            "decision_maker": "Director A, Managing Director", "dm_mobile": "90000 00000", "dm_email": "a@example.com",
+            "cmr": "CMR-4", "enquiries": "1", "dpd": "No DPD in 24 months", "guarantees_given": "None beyond this borrower",
+        },
     }
 
 
@@ -153,7 +179,7 @@ def demo_kyc() -> list:
     """KYC documents on the demo case (names only). Address proof and Director B's ID proof are not attached yet."""
     docs = [("certificate_of_incorporation", ""), ("moa", ""), ("aoa", ""), ("entity_pan", ""), ("gst_certificate", ""),
             ("udyam", ""), ("board_resolution", ""), ("shareholding", ""), ("pan", "Director A"),
-            ("aadhaar", "Director A"), ("photo", "Director A"), ("pan", "Director B")]
+            ("aadhaar", "Director A"), ("photo", "Director A"), ("pan", "Director B"), ("directors_list", "")]
     return [{"doc_id": f"K{i:02d}", "filename": f"{kind}{'_' + person.replace(' ', '_') if person else ''}.pdf",
              "doc_type": kind, "person": person} for i, (kind, person) in enumerate(docs, 1)]
 

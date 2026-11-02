@@ -198,7 +198,7 @@ def gstr3b_pdf(month="April", year="2024-25", taxable=3_45_67_890.00):
             "(b) Outward taxable supplies (zero rated) 12,000.00 0.00 0.00 0.00 0.00\n"
             "(c) Other outward supplies (Nil rated, exempted) 0.00 0.00 0.00 0.00 0.00\n"
             "C. Net ITC Available (A) - (B) 1,20,000.00 25,00,000.00 25,00,000.00 0.00\n"
-            "Date of ARN 18/05/2024\n")
+            "ARN AA270424012345X\nDate of ARN 18/05/2024\n")
     doc = fitz.open()
     page = doc.new_page(width=595, height=842)
     page.insert_textbox(fitz.Rect(36, 36, 560, 800), text, fontsize=7)
@@ -211,6 +211,7 @@ def test_gstr3b():
         pdf.insert_pdf(fitz.open(stream=gstr3b_pdf(m), filetype="pdf"))
     x = lp.parse_gst(pdf.tobytes(), ".pdf")
     assert x["gstin"] == "27AABCD1234E1Z5"
+    assert x["periods"][0]["arn"] == "AA270424012345X"
     assert [p["period"] for p in x["periods"]] == ["2024-04", "2024-05"]
     p = x["periods"][0]
     assert p["taxable_turnover"] == pytest.approx(34567890.0)
