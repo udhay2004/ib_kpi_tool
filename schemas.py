@@ -147,6 +147,7 @@ GST_PERIOD = _obj({
     "itc_available_gstr2b": NUM,
     "filing_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
     "due_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+    "arn": {"type": ["string", "null"], "description": "Application Reference Number of the filed return"},
     "source_pages": PAGES,
 })
 

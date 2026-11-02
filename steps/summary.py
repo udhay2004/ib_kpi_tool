@@ -10,6 +10,7 @@ from html import escape
 import pandas as pd
 import streamlit as st
 
+import cam_lite
 import capacity
 import credit_report
 import kpis
@@ -176,6 +177,12 @@ def report_pdf(s: dict) -> bytes:
                                    schedules() if s["case"]["facilities"] else {}, entity_details())
 
 
+def cam_pdf(s: dict) -> bytes:
+    info = {**ss.case.get("report", {}), "date": datetime.now().strftime("%d %b %Y")}
+    return cam_lite.build_pdf(s, info, {d["doc_type"] for d in kyc_step.kyc_docs()},
+                              {d["doc_type"] for d in fin_docs() if d.get("extracted")})
+
+
 def _report_details():
     rep = ss.case.setdefault("report", {})
     with st.expander("Report details — bank, preparer, recommendation", expanded=not rep.get("bank")):
@@ -189,6 +196,17 @@ def _report_details():
             "Recommendation / remarks for the bank", value=rep.get("recommendation", ""), height=90,
             key="rep_recommendation", placeholder="e.g. Recommended for ₹10 Cr fund-based and ₹2.5 Cr non-fund limits, "
                                                   "subject to reducing CC to the assessed ₹4.38 Cr…")
+    with st.expander("Internal CAM details — not sent to the lender"):
+        c1, c2 = st.columns(2)
+        for col, key, label in ((c1, "repayment_source", "Primary repayment source"),
+                                (c2, "proposed_lenders", "Proposed lenders (primary / fallback)"),
+                                (c1, "large_entries", "Large or unusual bank entries — explanation"),
+                                (c2, "title_status", "Title chain status (ROC & CERSAI checked?)"),
+                                (c1, "go_no_go", "Go / No-go and rationale"),
+                                (c2, "lender_sequencing", "Lender sequencing plan"),
+                                (c1, "preempted_queries", "Pre-empted credit queries & our answers"),
+                                (c2, "approved_by", "Approved by (credit desk) / date")):
+            rep[key] = col.text_input(label, value=rep.get(key, ""), key=f"rep_{key}")
 
 
 def render(div, unit_label):
@@ -251,9 +269,10 @@ def render(div, unit_label):
 
     ui.section("Report for the bank", "One PDF: company name, company KYC, director KYC, financials (last 2 years), GST "
                                       "(last 12 months), proposed plan, security and repayment, then supporting analysis "
-                                      "and the financial and security documents as annexures.")
+                                      "and the financial and security documents as annexures. The CAM-Lite is internal and "
+                                      "separate.")
     _report_details()
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     name = (b["name"] or "Case").replace(" ", "_")
     extra = {
         "Proposal": s["facilities"],
@@ -288,6 +307,12 @@ def render(div, unit_label):
         c1.download_button("⬇  Credit report (PDF)", pdf, file_name=f"{name}_credit_report.pdf", type="primary",
                            use_container_width=True, mime="application/pdf",
                            help="Appraisal note with all KYC, financial and security documents attached.")
+    try:
+        c5.download_button("⬇  CAM-Lite (internal PDF)", cam_pdf(s), file_name=f"{name}_CAM_Lite_internal.pdf",
+                           use_container_width=True, mime="application/pdf",
+                           help="Internal deal assessment, prepared before lender login. Not in the bank report or the ZIP.")
+    except Exception as ex:
+        st.error(f"Could not build the CAM-Lite: {ex}")
     c2.download_button("⬇  Credit file (.zip)", credit_file_zip(xls, name, folders, pdf),
                        file_name=f"{name}_credit_file.zip", use_container_width=True,
                        help=f"PDF report + Excel credit note + {n_files} KYC document(s), plus the financial and "

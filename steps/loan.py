@@ -7,6 +7,7 @@ import streamlit as st
 import loans
 import ui
 from common import facility_totals, inr, ss
+from steps import fact_find
 from kyc import CONSTITUTIONS
 
 MSME = ["Micro", "Small", "Medium", "Not MSME", "Not registered"]
@@ -97,3 +98,5 @@ def render():
             {"label": "Total incl. existing", "value": inr(t["total"] + b["existing_exposure"]),
              "sub": "LEI needed (≥ ₹5 Cr)" if t["total"] + b["existing_exposure"] >= 5e7 else "Below LEI threshold"},
         ])
+
+    fact_find.render()

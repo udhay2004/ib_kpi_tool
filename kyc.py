@@ -20,6 +20,7 @@ ENTITY_DOCS = {
     "gst_certificate": "GST registration certificate (REG-06)",
     "udyam": "Udyam registration certificate",
     "board_resolution": "Board resolution to borrow & authorised signatories",
+    "directors_list": "Latest list of directors (CA/CS certified)",
     "shareholding": "Shareholding pattern / list of members (MGT-7 / CA-certified)",
     "address_proof": "Registered office address proof (utility bill / rent agreement)",
     "lei": "Legal Entity Identifier (LEI) certificate",
@@ -42,12 +43,12 @@ PERSON_DOCS = {
 ALL_KINDS = {**ENTITY_DOCS, **PERSON_DOCS, "other": "Other"}
 
 REQUIRED = {
-    "company": ["certificate_of_incorporation", "moa", "aoa", "entity_pan", "gst_certificate", "board_resolution",
-                "shareholding", "address_proof"],
-    "llp": ["certificate_of_incorporation", "llp_agreement", "entity_pan", "gst_certificate", "board_resolution",
+    "company": ["certificate_of_incorporation", "moa", "aoa", "entity_pan", "gst_certificate", "udyam", "board_resolution",
+                "directors_list", "shareholding", "address_proof"],
+    "llp": ["certificate_of_incorporation", "llp_agreement", "entity_pan", "gst_certificate", "udyam", "board_resolution",
             "address_proof"],
-    "partnership": ["partnership_deed", "entity_pan", "gst_certificate", "partners_authority", "address_proof"],
-    "proprietorship": ["gst_certificate", "business_proof", "address_proof"],
+    "partnership": ["partnership_deed", "entity_pan", "gst_certificate", "udyam", "partners_authority", "address_proof"],
+    "proprietorship": ["gst_certificate", "udyam", "address_proof"],
     "trust": ["trust_deed", "entity_pan", "board_resolution", "address_proof"],
 }
 
@@ -71,7 +72,7 @@ KEYWORDS = [
     ("driving", "driving_licence"), ("licence", "driving_licence"), ("photo", "photo"), ("net worth", "networth"),
     ("networth", "networth"), ("incorporation", "certificate_of_incorporation"), ("coi", "certificate_of_incorporation"),
     ("moa", "moa"), ("memorandum", "moa"), ("aoa", "aoa"), ("articles", "aoa"), ("udyam", "udyam"),
-    ("resolution", "board_resolution"), ("shareholding", "shareholding"), ("mgt", "shareholding"), ("lei", "lei"),
+    ("resolution", "board_resolution"), ("list of directors", "directors_list"), ("directors list", "directors_list"), ("shareholding", "shareholding"), ("mgt", "shareholding"), ("lei", "lei"),
     ("llp agreement", "llp_agreement"), ("partnership deed", "partnership_deed"), ("deed", "partnership_deed"),
     ("authority", "partners_authority"), ("trust", "trust_deed"), ("bye", "trust_deed"), ("gst", "gst_certificate"),
     ("reg-06", "gst_certificate"), ("address", "address_proof"), ("electricity", "address_proof"),

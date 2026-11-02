@@ -102,6 +102,41 @@ def test_financials_keep_two_years_and_gst_twelve_months(demo):
     assert recent["period"].nunique() <= 12 and m["months_filed"] == recent["period"].nunique()
 
 
+def test_report_carries_the_detail_sheet_fields(demo):
+    from steps import kyc_step
+    s = demo.build()
+    text = _text(fitz.open("pdf", cr.build_pdf(s, {}, kyc_step.kyc_docs(), [], {})))
+    for want in ("M/s Demo Polymers", "City & PIN code", "List of major customers", "Bills receivable", "NPBT",
+                 "Total fixed monthly expenses", "Loan obligations", "FOIR after this proposal", "ARN no", "00000001",
+                 "XXXX XXXX 1234", "BUSINESS & CORPORATE DEBT FUNDING", "Connect Ventures Inc."):
+        assert want in text, want
+    assert cr.mask_aadhaar("1234 5678 9012") == "XXXX XXXX 9012" and cr.mask_aadhaar(None) == "—"
+
+
+def test_cam_lite_follows_the_template_and_stays_separate(demo):
+    import cam_lite
+    s = demo.build()
+    text = _text(fitz.open("pdf", cam_lite.build_pdf(s, {"go_no_go": "Go, with reduced CC"}, {"pan"}, {"gst"})))
+    for n, title in enumerate(["Deal Summary", "Borrower & Management Profile", "Financial Summary", "Banking Conduct Summary",
+                               "Bureau Summary", "Obligations & Eligibility", "Collateral", "Strengths, Weaknesses & Mitigants",
+                               "Recommendation"], 1):
+        assert f"{n}. {title}" in text, title
+    assert "Go, with reduced CC" in text and "Not for the lender".lower() in text.lower() and "CMR-4" in text
+    assert "Document checklist" in text and "Latest list of directors" in text
+    bank = _text(fitz.open("pdf", cr.build_pdf(s, {}, [], [], {})))
+    assert "Lender sequencing" not in bank and "Pre-empted" not in bank
+
+
+def test_checklist_follows_entity_and_products():
+    import checklist
+    case = {"borrower": {"constitution": "Partnership firm"}, "securities": [], "client": {},
+            "facilities": [{"product": "Cash Credit (CC)"}]}
+    items = {b: c for _, b, c in checklist.build(case, {"entity_pan"}, {"gst"})}
+    assert items["PAN card of the firm"] == "Received" and items["Registered partnership deed with all amendments"] == "Pending"
+    assert items["GSTR-3B returns for the last 12 months"] == "Received" and "Latest stock statement" in items
+    assert "Certificate of Incorporation" not in items and "Complete chain of title documents" not in items
+
+
 def test_locked_pdf_is_listed_not_embedded(demo):
     from steps import kyc_step
     kyc_list = kyc_step.kyc_docs()

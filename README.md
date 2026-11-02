@@ -41,7 +41,9 @@ Always check the **Review** tab: the parser is rule-based and unusual layouts ca
 
 ## The credit report (PDF) for the bank
 
-One PDF, in this order:
+Two PDFs. The **bank report** follows the loan detail sheet; the **CAM-Lite** (`cam_lite.py`) is the internal deal
+assessment in the Connect Ventures template, kept out of the bank report and the ZIP. Client details from the fact-find
+form are entered at the end of step 1. The bank report runs in this order:
 
 - **Cover** — company name first, then proposal details and contents
 1. Company KYC — company details, document list, what is still missing, then the documents themselves

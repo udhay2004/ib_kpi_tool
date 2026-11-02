@@ -19,6 +19,7 @@ THRESHOLDS = {
     "current_ratio_benchmark": 1.33,   # Tandon 2nd method; ordinarily not below 1.17
     "current_ratio_floor": 1.17,
     "dscr_min": 1.25,                  # any single year
+    "foir_max": 0.55,                 # fixed obligations / income, typical 50-60%
     "dscr_avg_min": 1.50,              # average over the years
     "interest_coverage_min": 2.0,
     "debt_equity_max": 3.0,            # term-loan D/E norm (2:1 for many lenders)
