@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Credit Appraisal Workbench</title>
+<link rel="icon" href="https://compliance.complyglobally.com/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<div id="login" class="login" hidden>
+  <form class="login-card" id="login-form">
+    <img src="https://compliance.complyglobally.com/logo.png" alt="" class="login-logo">
+    <h1>Credit Appraisal Workbench</h1>
+    <p>Enter the team password to continue.</p>
+    <label class="field"><span>Team password</span><input type="password" name="password" autocomplete="current-password" required></label>
+    <div class="error" id="login-error"></div>
+    <button class="btn primary wide" type="submit">Sign in</button>
+  </form>
+</div>
+
+<div id="app" class="shell" hidden>
+  <aside class="sidebar" id="sidebar"></aside>
+  <main class="main">
+    <button class="menu-btn" id="menu-btn" aria-label="Open menu">☰</button>
+    <section id="hero"></section>
+    <nav class="stepper" id="stepper" aria-label="Steps"></nav>
+    <section id="view" class="view"></section>
+    <div class="pager" id="pager"></div>
+  </main>
+</div>
+<div id="toast" class="toast" role="status"></div>
+<div id="busy" class="busy" hidden><div class="spinner"></div><span id="busy-text">Working…</span></div>
+</body>
+</html>
