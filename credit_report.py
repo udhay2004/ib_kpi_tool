@@ -6,7 +6,7 @@ banking conduct, ITRs, overall assessment, risks, compliance checks for the bank
 Financial and security documents are annexures at the end. There is no single RBI format - every bank has its own -
 so the bank's own note format and sanction terms prevail.
 
-Pure module (no Streamlit): build_pdf() takes the case summary from steps.summary.build() plus the documents.
+Pure module (no Streamlit): build_pdf() takes the case summary from engine.Workspace.build() plus the documents.
 """
 
 import io

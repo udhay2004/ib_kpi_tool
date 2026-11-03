@@ -5,7 +5,7 @@ services:
     runtime: docker
     plan: starter            # "free" also works but sleeps after 15 min idle and has 512 MB RAM
     region: singapore        # closest Render region to India
-    healthCheckPath: /_stcore/health
+    healthCheckPath: /api/health
     autoDeploy: true
     envVars:
       - key: APP_PASSWORD    # team password screen - set it in the Render dashboard

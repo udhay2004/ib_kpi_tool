@@ -1,7 +1,7 @@
 """Credit Appraisal Memo (CAM-Lite): the Connect Ventures internal deal assessment, prepared before lender login.
 Internal only, so it is a separate PDF and never part of the bank report or the credit file ZIP.
 
-Pure module (no Streamlit). Filled from the case where the app has the data, otherwise from what was typed in.
+Pure module (no UI). Filled from the case where the app has the data, otherwise from what was typed in.
 """
 
 import fitz

@@ -1,19 +1,15 @@
 """Run: python -m pytest test_credit_report.py"""
 
 import io
-import logging
 import zipfile
 
 import fitz
 import pandas as pd
 import pytest
 
-logging.getLogger("streamlit").setLevel(logging.ERROR)
-
-import credit_report as cr  # noqa: E402
-import kpis  # noqa: E402
-from common import init_state, reset_all, ss  # noqa: E402
-from demo_data import demo_case, demo_docs, demo_kyc, demo_security_docs  # noqa: E402
+import credit_report as cr
+import kpis
+from engine import Workspace
 
 
 def _pdf(pages=1, text="page", password=None) -> bytes:
@@ -38,26 +34,19 @@ def _png() -> bytes:
 
 @pytest.fixture
 def demo():
-    init_state()
-    reset_all()
-    ss.case = demo_case()
-    ss.demo, ss.static_kyc, ss.static_sec = demo_docs(), demo_kyc(), demo_security_docs()
-    from steps import summary
-    yield summary
-    reset_all()
+    ws = Workspace()
+    ws.load_demo()
+    return ws
 
 
-def _build(summary, kyc_list, other):
-    from steps import kyc_step
-    from steps.repayment_step import schedules
-    s = summary.build()
+def _build(ws, kyc_list, other):
+    s = ws.build()
     return s, cr.build_pdf(s, {"bank": "Test Bank", "prepared_by": "Analyst", "recommendation": "Recommended."},
-                           kyc_list, kyc_step.missing(), other, schedules(), {"GSTIN": "27AABCD1234E1Z5"})
+                           kyc_list, ws.kyc_missing(), other, ws.schedules(), {"GSTIN": "27AABCD1234E1Z5"})
 
 
 def test_report_has_every_section_and_annexures(demo):
-    from steps import kyc_step
-    kyc_list = kyc_step.kyc_docs()
+    kyc_list = demo.kyc_docs()
     kyc_list[0].update(data=_pdf(2, "Certificate"))
     kyc_list[9].update(data=_png(), filename="aadhaar_A.png")
     s, pdf = _build(demo, kyc_list, {"Financial documents": [("D01", "Audited_FS.pdf", _pdf(3, "Balance sheet")),
@@ -103,9 +92,8 @@ def test_financials_keep_two_years_and_gst_twelve_months(demo):
 
 
 def test_report_carries_the_detail_sheet_fields(demo):
-    from steps import kyc_step
     s = demo.build()
-    text = _text(fitz.open("pdf", cr.build_pdf(s, {}, kyc_step.kyc_docs(), [], {})))
+    text = _text(fitz.open("pdf", cr.build_pdf(s, {}, demo.kyc_docs(), [], {})))
     for want in ("M/s Demo Polymers", "City & PIN code", "List of major customers", "Bills receivable", "NPBT",
                  "Total fixed monthly expenses", "Loan obligations", "FOIR after this proposal", "ARN no", "00000001",
                  "XXXX XXXX 1234", "BUSINESS & CORPORATE DEBT FUNDING", "Connect Ventures Inc."):
@@ -138,8 +126,7 @@ def test_checklist_follows_entity_and_products():
 
 
 def test_locked_pdf_is_listed_not_embedded(demo):
-    from steps import kyc_step
-    kyc_list = kyc_step.kyc_docs()
+    kyc_list = demo.kyc_docs()
     kyc_list[0].update(data=_pdf(1, "secret", password="ABCDE1234F"))
     _, pdf = _build(demo, kyc_list, {})
     text = _text(fitz.open("pdf", pdf))
@@ -147,31 +134,24 @@ def test_locked_pdf_is_listed_not_embedded(demo):
 
 
 def test_empty_case_still_builds():
-    init_state()
-    reset_all()
-    from steps import summary
-    s = summary.build()
+    s = Workspace().build()
     doc = fitz.open("pdf", cr.build_pdf(s, {}, [], [], {}))
     assert doc.page_count >= 3 and "No financial statements were read" in _text(doc)
-    reset_all()
 
 
-def test_zip_carries_the_pdf(monkeypatch):
-    from steps import summary
-    monkeypatch.setattr(summary.kyc_step, "kyc_docs", lambda: [])
-    names = zipfile.ZipFile(io.BytesIO(summary.credit_file_zip(b"xls", "Acme", pdf=b"%PDF-1.7"))).namelist()
+def test_zip_carries_the_pdf():
+    names = zipfile.ZipFile(io.BytesIO(Workspace().credit_file_zip(b"xls", "Acme", pdf=b"%PDF-1.7"))).namelist()
     assert names[:2] == ["Acme_credit_report.pdf", "Acme_credit_note.xlsx"]
 
 
 def test_blank_cells_as_nan_do_not_break_the_report(demo):
     # pandas 3 stores blank text cells as NaN (a float), pandas 2 as None
-    from steps import kyc_step
     s = demo.build()
     nan = float("nan")
     s["capacity"]["metrics"]["Status"] = s["capacity"]["metrics"]["Status"].astype(object).where(lambda c: c.notna(), nan)
     s["capacity"]["metrics"].loc[1, "Status"] = nan
     s["facilities"] = s["facilities"].astype({"Within eligibility": object})
     s["facilities"].loc[0, "Within eligibility"] = nan
-    text = _text(fitz.open("pdf", cr.build_pdf(s, {}, kyc_step.kyc_docs(), [], {})))
+    text = _text(fitz.open("pdf", cr.build_pdf(s, {}, demo.kyc_docs(), [], {})))
     assert "nan" not in text.lower().split() and "Exceeds" not in text
     assert cr.status(nan) == "" and cr.status(None) == ""

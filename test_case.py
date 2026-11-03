@@ -79,12 +79,13 @@ def test_kyc_checklist_on_demo():
 def test_credit_file_zip_contains_kyc(monkeypatch):
     import io
     import zipfile
-    from steps import summary
+    from engine import Workspace
     docs = [{"doc_id": "K01", "filename": "aoa.pdf", "doc_type": "aoa", "person": "", "data": b"%PDF"},
             {"doc_id": "K02", "filename": "pan.jpg", "doc_type": "pan", "person": "Director A", "data": b"img"},
             {"doc_id": "K03", "filename": "moa.pdf", "doc_type": "moa", "person": "", "data": None}]
-    monkeypatch.setattr(summary.kyc_step, "kyc_docs", lambda: docs)
-    names = zipfile.ZipFile(io.BytesIO(summary.credit_file_zip(b"xls", "Acme"))).namelist()
+    ws = Workspace()
+    monkeypatch.setattr(ws, "kyc_docs", lambda: docs)
+    names = zipfile.ZipFile(io.BytesIO(ws.credit_file_zip(b"xls", "Acme"))).namelist()
     assert names == ["Acme_credit_note.xlsx", "KYC/K01 - Articles of association - aoa.pdf",
                      "KYC/K02 - PAN card - Director A - pan.jpg"]
 

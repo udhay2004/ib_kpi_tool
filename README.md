@@ -1,6 +1,7 @@
 # Credit Appraisal Workbench
 
-A guided credit-appraisal case file for Indian business loans, in six steps:
+A guided credit-appraisal case file for Indian business loans: a web app (HTML, CSS and JavaScript in `static/`) on a
+Python API (`server.py`, FastAPI) that does the reading, the analysis and the PDF reports. Six steps:
 
 | Step | What happens |
 |---|---|
@@ -68,10 +69,10 @@ section and document. KYC is attached as received; verification and the checks i
 
 ```bash
 pip install -r requirements.txt
-streamlit run app.py
+uvicorn server:app --port 8000
 ```
 
-Then open http://localhost:8501 and click **Load demo**, or start a case. No API key is needed for digital documents;
+Then open http://localhost:8000 and click **Load demo**, or start a case. No API key is needed for digital documents;
 add one in the sidebar only to read scanned PDFs and valuation reports.
 
 > **"Connection error" on Windows?** Antivirus HTTPS scanning (Avast, Kaspersky, etc.) or a corporate proxy replaces
@@ -80,8 +81,8 @@ add one in the sidebar only to read scanned PDFs and valuation reports.
 
 ## Hosting
 
-The app keeps uploaded documents in memory for the browser session only and writes nothing to disk.
-Set two secrets on your host, as environment variables or in `.streamlit/secrets.toml` (see `secrets.toml.example`):
+The server keeps each browser's case and uploaded documents in memory (for 12 hours of inactivity) and writes nothing to
+disk; a restart or redeploy clears them, so save the case file to keep work. Set two environment variables on your host:
 
 | Secret | Purpose |
 |---|---|
@@ -95,16 +96,14 @@ Set two secrets on your host, as environment variables or in `.streamlit/secrets
   then in Render choose *New + → Blueprint* and pick the repository. `render.yaml` sets up the Docker service in the
   Singapore region with a health check; enter `APP_PASSWORD` when asked. You get an `https://….onrender.com` URL
   (a custom domain can be added in Render).
-- **Streamlit Community Cloud (free):** push this folder to GitHub, then create an app with `app.py` as the entry file and paste the secrets under *Settings → Secrets*.
 - **Docker (Render, Railway, AWS, Azure, a VM):**
   ```bash
   docker build -t diligence-kpi .
-  docker run -p 8501:8501 -e ANTHROPIC_API_KEY=sk-ant-... -e APP_PASSWORD=... diligence-kpi
+  docker run -p 8000:8000 -e ANTHROPIC_API_KEY=sk-ant-... -e APP_PASSWORD=... diligence-kpi
   ```
   Put it behind HTTPS (most hosts do this for you).
 
 Before using real client data, confirm your firm allows sending documents to the Anthropic API.
-Uploads are limited to 200 MB per file (`.streamlit/config.toml`).
 
 ## Uploading documents
 
@@ -147,9 +146,10 @@ cash conversion cycle, CFO/EBITDA, free cash flow.
 
 ## Files
 
-`app.py` shell and stepper · `steps/` one module per step · `common.py` shared state and document upload component ·
+`static/` the web front end (`index.html`, `app.css`, `app.js`) · `server.py` the API and sign-in · `engine.py` one case and
+everything worked out from it · `views.py` the JSON each screen shows · `cam_lite.py` internal CAM · `checklist.py` document checklist ·
 `loans.py` facility catalogue and eligibility · `security.py` security types and cover · `kyc.py` KYC checklist and file-name
-guessing · `repayment.py` schedules and DSCR · `ui.py` theme and components · `intake.py` checklist, ZIP sorting, coverage ·
+guessing · `repayment.py` schedules and DSCR · `intake.py` checklist, ZIP sorting, coverage ·
 `extractor.py` Claude extraction · `schemas.py` fields extracted per document type · `kpis.py` formulas, flags, scorecard ·
 `report.py` Excel export · `credit_report.py` PDF credit report · `demo_data.py` fictional sample · `test_*.py` tests (`python -m pytest`)
 
