@@ -10,6 +10,7 @@ import pandas as pd
 import checklist
 import credit_report as cr
 import kpis
+import repayment as rp
 from credit_report import _na, e, escape, kv_table, lakh, table
 
 
@@ -74,7 +75,8 @@ def _financial(s) -> str:
     tol = [lakh(fin.at[yr, "total_assets"] - fin.at[yr, "net_worth"]) if {"total_assets", "net_worth"} <= set(fin.columns) else "—" for yr in years]
     sdc = [" / ".join(lakh(fin.at[yr, k]) if k in fin.columns else "—" for k in ("inventory", "trade_receivables", "trade_payables")) for yr in years]
     dt, f = s["dscr"], cr.foir(s)
-    post_dscr = ["—"] * (len(years) - 1) + ["—" if dt is None or dt.empty else f"{dt['dscr'].min():.2f}x"]
+    mn = rp.dscr_range(dt)[0]
+    post_dscr = ["—"] * (len(years) - 1) + ["—" if mn is None else f"{mn:.2f}x"]
     post_foir = ["—"] * (len(years) - 1) + ["—" if f is None else f"{f['foir']:.0%}"]
     blank = ["—"] if has_ytd else []
     rows = [["Sales"] + amt("revenue_from_operations") + ytd("sales"), ["EBITDA (and %)"] + ebitda + ytd("ebitda"),
@@ -130,7 +132,8 @@ def _obligations(s) -> str:
     elig = "<br>".join(e(f"{r['Facility']}: {r['Assessment']}, assessed {cr.inr(r['Eligible (₹)'])}") for _, r in fac.iterrows()) if not fac.empty else "—"
     f = cr.foir(s)
     if f:
-        elig += "<br>" + e(f"FOIR post-proposed {f['foir']:.0%} against {kpis.THRESHOLDS['foir_max']:.0%} cap: income {cr.inr(f['income'])} "
+        cap = (s.get("thresholds") or kpis.THRESHOLDS)["foir_max"]
+        elig += "<br>" + e(f"FOIR post-proposed {f['foir']:.0%} against {cap:.0%} cap: income {cr.inr(f['income'])} "
                            f"a month, existing EMI {cr.inr(f['existing'])}, proposed EMI {cr.inr(f['proposed'])}")
     structure = "<br>".join(e(f"{r['Facility']}: {cr.inr(r['Amount (₹)'])}, {r['Repayment']}") for _, r in fac.iterrows()) if not fac.empty else "—"
     return "<h1>6. Obligations & Eligibility</h1>" + _kv([

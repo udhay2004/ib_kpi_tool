@@ -81,13 +81,21 @@ add one in the sidebar only to read scanned PDFs and valuation reports.
 
 ## Hosting
 
-The server keeps each browser's case and uploaded documents in memory (for 12 hours of inactivity) and writes nothing to
-disk; a restart or redeploy clears them, so save the case file to keep work. Set two environment variables on your host:
+The server keeps each signed-in browser's case and uploaded documents in memory (dropped after 12 hours idle) and keeps
+nothing on disk (uploads are only buffered briefly while they arrive). A restart or redeploy clears every open case, so
+save the case file to keep work; after a restart the app puts back the case details still on screen, and documents
+have to be uploaded again. Set these environment variables on your host:
 
 | Secret | Purpose |
 |---|---|
 | `APP_PASSWORD` | **Set this.** A team password screen in front of the app. |
 | `ANTHROPIC_API_KEY` | Optional. Only for scanned documents and valuation reports. Users then don't need their own key. |
+| `SESSION_SECRET` | Optional. A long random string that signs the sign-in cookie; defaults to one derived from `APP_PASSWORD`. Changing it (or the password) signs everyone out. |
+| `AUTH_DAYS`, `SESSION_HOURS` | Optional. Sign-in lasts 7 days; an idle case is kept 12 hours. |
+| `MAX_FILE_MB`, `MAX_UPLOAD_MB`, `MAX_CASE_MB`, `MAX_SESSIONS` | Optional limits: 50 MB per file, 200 MB per upload, 400 MB of files per case, 200 open cases. |
+
+Sign-in is limited to 8 wrong passwords per address per 15 minutes. ZIP uploads are checked for ZIP bombs (300 files,
+50 MB per file, 200 MB in all, nothing that expands more than 200 times) and archives inside archives are skipped.
 
 - **Railway:** upload this folder to a GitHub repository, then in Railway choose *New Project → Deploy from GitHub repo*.
   Railway builds the `Dockerfile` (`railway.json` sets the health check). Add `APP_PASSWORD` (and optionally
@@ -124,7 +132,9 @@ Password-protected PDFs (common for bank statements and ITRs) are unlocked on th
 
 ## What it checks
 
-The benchmarks are common Indian bank/NBFC norms, and every one can be changed in the sidebar. They vary by lender, so set them to the policy you work to.
+The benchmarks are common Indian bank/NBFC norms, and every one can be changed in the sidebar. A change applies to the
+open case only and is saved in its case file, so other analysts' cases keep their own. They vary by lender, so set them
+to the policy you work to.
 
 **Financials (per FY):** revenue growth, EBITDA and PAT margins, tangible net worth, current and quick ratio
 (benchmark 1.33, floor 1.17), Debt/TNW (≤3), TOL/TNW (≤4) and TOL/TNW with promoter loans counted as quasi-equity,

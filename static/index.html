@@ -13,13 +13,22 @@
 <script src="/static/app.js" defer></script>
 </head>
 <body>
+<noscript><div class="login"><div class="login-card"><h1>JavaScript is off</h1>
+  <p>The Credit Appraisal Workbench needs JavaScript. Turn it on for this site in your browser settings, then reload the page.</p></div></div></noscript>
+<div id="boot" class="login" role="status" aria-live="polite">
+  <div class="login-card boot-card"><img src="https://compliance.complyglobally.com/logo.png" alt="" class="login-logo">
+    <h1>Credit Appraisal Workbench</h1>
+    <div class="hstack"><div class="spinner" id="boot-spinner"></div><span id="boot-text">Loading the workbench…</span></div>
+    <button class="btn primary wide" id="boot-retry" type="button" hidden>Try again</button>
+  </div>
+</div>
 <div id="login" class="login" hidden>
   <form class="login-card" id="login-form">
     <img src="https://compliance.complyglobally.com/logo.png" alt="" class="login-logo">
     <h1>Credit Appraisal Workbench</h1>
     <p>Enter the team password to continue.</p>
     <label class="field"><span>Team password</span><input type="password" name="password" autocomplete="current-password" required></label>
-    <div class="error" id="login-error"></div>
+    <div class="error" id="login-error" role="alert" aria-live="assertive"></div>
     <button class="btn primary wide" type="submit">Sign in</button>
   </form>
 </div>
@@ -34,7 +43,7 @@
     <div class="pager" id="pager"></div>
   </main>
 </div>
-<div id="toast" class="toast" role="status"></div>
-<div id="busy" class="busy" hidden><div class="spinner"></div><span id="busy-text">Working…</span></div>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="busy" class="busy" hidden role="status" aria-live="polite"><div class="spinner"></div><span id="busy-text"></span></div>
 </body>
 </html>

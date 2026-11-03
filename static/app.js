@@ -1,5 +1,7 @@
 /* Credit Appraisal Workbench - front end. Renders the state from /api/state and sends every change back to the API.
-   No framework: each render rebuilds the current view from the latest state. */
+   No framework: each render rebuilds the current view from the latest state.
+   Every value that comes from the server, a case file or a document is passed through esc() before it goes into
+   HTML - text and attributes alike. */
 "use strict";
 
 const STEPS = ["Loan request", "Security", "KYC", "Financials", "Repayment", "Credit summary"];
@@ -57,21 +59,42 @@ function toast(msg, bad) {
   t.textContent = msg; t.className = "toast show" + (bad ? " bad" : "");
   clearTimeout(toast.t); toast.t = setTimeout(() => (t.className = "toast"), bad ? 6000 : 2600);
 }
-function busy(on, text) { $("#busy").hidden = !on; $("#busy-text").textContent = text || "Working…"; }
+function busy(on, text) {
+  $("#busy").hidden = !on;
+  $("#busy-text").textContent = on ? (text || "Working…") : "";
+}
 
-async function api(method, path, body, label) {
+const TIMEOUT_MS = 90000, SLOW_TIMEOUT_MS = 600000;  // reading scanned documents with Claude can take minutes
+async function fetchWithTimeout(url, opt = {}, ms = TIMEOUT_MS) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), ms);
+  try { return await fetch(url, { ...opt, signal: ctl.signal, credentials: "same-origin" }); }
+  catch (e) { throw new Error(e.name === "AbortError" ? "The server took too long to answer. Check your connection and try again." : "Could not reach the server. Check your connection and try again."); }
+  finally { clearTimeout(timer); }
+}
+
+async function api(method, path, body, label, retried) {
   const sep = path.includes("?") ? "&" : "?";
   const url = path.startsWith("/api/") ? path + sep + "unit=" + encodeURIComponent(ui.unit) : path;
-  const opt = { method, credentials: "same-origin", headers: {} };
+  const opt = { method, headers: {} };
   if (body instanceof FormData) opt.body = body;
   else if (body !== undefined) { opt.body = JSON.stringify(body); opt.headers["Content-Type"] = "application/json"; }
   if (label) busy(true, label);
   try {
-    const r = await fetch(url, opt);
+    const slow = path.startsWith("/api/read/") || path.startsWith("/api/files/");
+    const r = await fetchWithTimeout(url, opt, slow ? SLOW_TIMEOUT_MS : TIMEOUT_MS);
     const data = await r.json().catch(() => ({}));
     if (r.status === 401) { showLogin(); throw new Error(data.error || "Sign in first"); }
-    if (r.status === 409) { await fetch("/api/session"); throw new Error("Your session restarted. Reload the case or load the demo again."); }
-    if (!r.ok) throw new Error(data.detail || data.error || r.statusText);
+    if (r.status === 409 && !retried) {
+      // The server restarted or the case expired: start a new session, put back the case details still on
+      // screen (uploaded files are lost), then repeat the request once.
+      await fetchWithTimeout("/api/session");
+      if (S && S.case) await fetchWithTimeout("/api/case?unit=" + encodeURIComponent(ui.unit),
+        { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(S.case) });
+      toast("Your session had expired. The case details were restored; upload any documents again.", true);
+      return api(method, path, body, label, true);
+    }
+    if (!r.ok) throw new Error(data.error || data.detail || r.statusText);
     return data;
   } finally { if (label) busy(false); }
 }
@@ -112,12 +135,12 @@ function tbl(t, opts = {}) {
 function field(label, inner, help) { return `<label class="field"><span>${esc(label)}</span>${inner}${help ? `<small>${esc(help)}</small>` : ""}</label>`; }
 function input(bind, value, kind = "text", attrs = "") {
   const v = value ?? "";
-  if (kind === "textarea") return `<textarea data-bind="${bind}" ${attrs}>${esc(v)}</textarea>`;
-  return `<input type="${kind === "num" ? "number" : kind}" data-bind="${bind}" data-kind="${kind}" value="${esc(v)}" ${kind === "num" ? 'step="any"' : ""} ${attrs}>`;
+  if (kind === "textarea") return `<textarea data-bind="${esc(bind)}" ${attrs}>${esc(v)}</textarea>`;
+  return `<input type="${kind === "num" ? "number" : kind}" data-bind="${esc(bind)}" data-kind="${kind}" value="${esc(v)}" ${kind === "num" ? 'step="any"' : ""} ${attrs}>`;
 }
 function select(bind, value, options, attrs = "") {
   const opts = options.map((o) => (Array.isArray(o) ? o : [o, o]));
-  return `<select data-bind="${bind}" ${attrs}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
+  return `<select data-bind="${esc(bind)}" ${attrs}>${opts.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value) ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`;
 }
 function seg(name, value, options) {
   return `<div class="seg" data-seg="${name}">${options.map((o) => `<button type="button" data-val="${esc(o)}" class="${o === value ? "on" : ""}">${esc(o)}</button>`).join("")}</div>`;
@@ -150,14 +173,15 @@ function fileTable(store, files, opts = {}) {
   if (!files.length) return "";
   const rows = files.map((f) => {
     const st = { extracted: "good", failed: "critical", unreadable: "critical", locked: "warning", pending: "info" }[f.status];
-    const typeCell = opts.types ? `<select data-file="${store}|${f.doc_id}|doc_type">${Object.entries(opts.types)
+    const id = esc(f.doc_id);
+    const typeCell = opts.types ? `<select data-file="${store}|${id}|doc_type">${Object.entries(opts.types)
       .map(([k, l]) => `<option value="${k}" ${k === f.doc_type ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>` : "";
-    const personCell = opts.person ? `<input type="text" data-file="${store}|${f.doc_id}|person" value="${esc(f.person)}" placeholder="Person">` : "";
-    const lock = f.encrypted ? `<div class="hstack" style="margin-top:6px"><input type="password" placeholder="PDF password" data-pw="${store}|${f.doc_id}" style="max-width:200px">
-      <button class="btn sm" data-unlock="${store}|${f.doc_id}">Unlock</button></div>` : "";
+    const personCell = opts.person ? `<input type="text" data-file="${store}|${id}|person" value="${esc(f.person)}" placeholder="Person" aria-label="Person">` : "";
+    const lock = f.encrypted ? `<div class="hstack" style="margin-top:6px"><input type="password" placeholder="PDF password" aria-label="PDF password" data-pw="${store}|${id}" style="max-width:200px">
+      <button class="btn sm" data-unlock="${store}|${id}">Unlock</button></div>` : "";
     return `<tr><td>${esc(f.doc_id)}</td><td>${esc(f.filename)}${lock}</td>${opts.types ? `<td style="min-width:200px">${typeCell}</td>` : ""}
       ${opts.person ? `<td style="min-width:150px">${personCell}</td>` : ""}<td>${opts.noStatus ? "" : pill(st, f.status_text)}</td>
-      <td class="muted small">${esc(f.note)}</td><td>${f.pages ?? ""}</td><td><button class="x" title="Remove" data-remove="${store}|${f.doc_id}">✕</button></td></tr>`;
+      <td class="muted small">${esc(f.note)}</td><td>${esc(f.pages ?? "")}</td><td><button class="x" title="Remove" aria-label="Remove ${esc(f.filename)}" data-remove="${store}|${id}">✕</button></td></tr>`;
   }).join("");
   return `<div class="tbl-wrap"><table class="tbl edit"><thead><tr><th>ID</th><th>File</th>${opts.types ? "<th>Type</th>" : ""}${opts.person ? "<th>Person</th>" : ""}
     <th>${opts.noStatus ? "" : "Status"}</th><th>Note</th><th>Pages</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
@@ -175,7 +199,7 @@ function readButton(store, lastRun, hint, needsKey) {
 // ---------------------------------------------------------------- charts
 
 const SERIES = ["#23847C", "#C68A2E", "#5B7FD6"];
-function chartBox(id) { return `<div class="chart"><canvas id="${id}"></canvas></div>`; }
+function chartBox(id) { return `<div class="chart"><canvas id="${esc(id)}" role="img" aria-label="Chart"></canvas></div>`; }
 function drawChart(id, data, kind, opts = {}) {
   const el = document.getElementById(id);
   if (!el || !data || !window.Chart) return;
@@ -197,7 +221,7 @@ function drawChart(id, data, kind, opts = {}) {
 // ---------------------------------------------------------------- frame
 
 function renderSidebar() {
-  const th = M.thresholds;
+  const th = S.thresholds, defaults = M.threshold_defaults;
   $("#sidebar").innerHTML = `
     <div class="brand"><img src="https://compliance.complyglobally.com/logo.png" alt=""><div><div class="t">Credit Appraisal Workbench</div>
       <div class="s">by ComplyGlobally</div></div></div>
@@ -210,8 +234,9 @@ function renderSidebar() {
     <div class="field"><span>Amounts in</span>${seg("unit", ui.unit, M.units)}</div>
     <div class="spacer"></div>
     ${fold("bench", "Credit benchmarks", `<p class="muted small" style="margin-top:0">Common Indian bank / NBFC norms. Change them to your lender's policy.</p>
+      <p class="muted small">Saved with this case only; other cases keep their own.</p>
       ${Object.entries(th).map(([k, v]) => field(k.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase()),
-        `<input type="number" step="any" data-threshold="${k}" value="${v}">`)).join("<div style='height:8px'></div>")}`, false)}
+        `<input type="number" step="any" min="0" data-threshold="${esc(k)}" value="${esc(v)}">`, v !== defaults[k] ? `Default ${defaults[k]}` : "")).join("<div style='height:8px'></div>")}`, false)}
     ${S.server_key ? "" : fold("key", "Claude API key (scanned documents)", `<p class="muted small" style="margin-top:0">Not needed for digital PDFs, Excel or CSV:
       those are read on this server. Only scanned documents and valuation reports use Claude. Kept for this session only.</p>
       <input type="password" placeholder="sk-ant-…" data-apikey value="">${S.has_key ? `<div class="spacer"></div>${pill("good", "Key set for this session")}` : ""}`, false)}
@@ -371,7 +396,7 @@ function viewSecurity() {
   if (sx.files.length && S.has_key) h += readButton("sec_docs", sx.last_run, "Claude reads each document and suggests the security it describes.", true);
   sx.suggestions.forEach((g) => {
     h += `<div class="card hstack between"><div><b>${esc(g.title)}</b><div class="muted">${esc(g.detail)}</div></div>
-      <button class="btn ${g.added ? "" : "primary"} sm" data-suggest="${g.doc_id}" ${g.added ? "disabled" : ""}>${g.added ? "Added ✓" : "Add as security"}</button></div>`;
+      <button class="btn ${g.added ? "" : "primary"} sm" data-suggest="${esc(g.doc_id)}" ${g.added ? "disabled" : ""}>${g.added ? "Added ✓" : "Add as security"}</button></div>`;
   });
   if (S.case.securities.length || S.case.facilities.length) {
     h += section("Cover", "Realisable value against exposure (non-fund limits net of cash margin).") + tiles(sx.tiles);
@@ -448,7 +473,7 @@ function viewReview() {
         const v = fin.values[fld][j];
         const isText = ["doc_id", "source_pages", "audited"].includes(fld) || (v !== null && typeof v !== "number");
         return `<td style="min-width:140px">${isText ? `<span class="muted small">${esc(Array.isArray(v) ? v.join(", ") : v)}</span>`
-          : `<input type="number" step="any" data-cell="financials|${fld}|${j}" value="${v ?? ""}">`}</td>`;
+          : `<input type="number" step="any" data-cell="financials|${esc(fld)}|${j}" value="${esc(v ?? "")}" aria-label="${esc(fld)} ${esc(y)}">`}</td>`;
       }).join("")}</tr>`).join("")}</tbody></table></div>`;
   }
   for (const [key, title] of [["bank", "Bank statements — monthly"], ["gst", "GST returns"], ["itr", "Director / promoter ITRs"]]) {
@@ -457,7 +482,7 @@ function viewReview() {
     h += section(title) + `<div class="tbl-wrap scroll-y"><table class="tbl edit"><thead><tr>${t.columns.map((c) => `<th>${esc(c.replace(/_/g, " "))}</th>`).join("")}</tr></thead>
       <tbody>${t.rows.map((row, i) => `<tr>${t.columns.map((c) => {
         const v = row[c];
-        return typeof v === "number" || v === null ? `<td style="min-width:120px"><input type="number" step="any" data-cell="${key}|${c}|${i}" value="${v ?? ""}"></td>`
+        return typeof v === "number" || v === null ? `<td style="min-width:120px"><input type="number" step="any" data-cell="${key}|${esc(c)}|${i}" value="${esc(v ?? "")}" aria-label="${esc(c)}"></td>`
           : `<td class="small muted">${esc(Array.isArray(v) ? v.join(", ") : typeof v === "object" ? JSON.stringify(v) : v)}</td>`;
       }).join("")}</tr>`).join("")}</tbody></table></div>`;
   }
@@ -631,7 +656,7 @@ document.addEventListener("change", async (e) => {
     return;
   }
   if (el.dataset.threshold) {
-    M.thresholds[el.dataset.threshold] = Number(el.value);
+    if (el.value === "" || Number(el.value) < 0) { toast("Benchmarks must be zero or more", true); return render(); }
     return act("PUT", "/api/settings", { thresholds: { [el.dataset.threshold]: Number(el.value) } });
   }
   if ("apikey" in el.dataset) {
@@ -698,9 +723,11 @@ document.addEventListener("click", async (e) => {
     await act("PUT", "/api/case", S.case);
     busy(true, "Preparing the file…");
     try {
-      const r = await fetch(el.getAttribute("href"), { credentials: "same-origin" });
+      const r = await fetchWithTimeout(el.getAttribute("href"), {}, SLOW_TIMEOUT_MS);
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.statusText);
-      const name = (r.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || "download";
+      const cd = r.headers.get("Content-Disposition") || "";
+      const utf = cd.match(/filename\*=UTF-8''([^;]+)/);
+      const name = utf ? decodeURIComponent(utf[1]) : cd.match(/filename="([^"]+)"/)?.[1] || "download";
       const url = URL.createObjectURL(await r.blob());
       const a = Object.assign(document.createElement("a"), { href: url, download: name });
       document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
@@ -716,21 +743,43 @@ document.addEventListener("click", (e) => {
 
 // ---------------------------------------------------------------- start
 
-function showLogin() { $("#app").hidden = true; $("#login").hidden = false; }
+function showScreen(id) { for (const s of ["boot", "login", "app"]) $("#" + s).hidden = s !== id; }
+function showLogin() { showScreen("login"); setTimeout(() => $("#login-form input[name=password]").focus(), 0); }
+function bootError(msg) {
+  showScreen("boot");
+  $("#boot-text").textContent = msg;
+  $("#boot-spinner").hidden = true;
+  $("#boot-retry").hidden = false;
+}
+$("#boot-retry").addEventListener("click", () => start());
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "same-origin",
-    body: JSON.stringify({ password: e.target.password.value }) });
-  if (!r.ok) { $("#login-error").textContent = "Wrong password"; return; }
-  $("#login").hidden = true; start();
+  const btn = $("#login-form button[type=submit]"), err = $("#login-error");
+  err.textContent = "";
+  btn.disabled = true; btn.textContent = "Signing in…";
+  try {
+    const r = await fetchWithTimeout("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: e.target.password.value }) }, 30000);
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) { err.textContent = data.error || "Could not sign in"; return; }
+    e.target.password.value = "";
+    start();
+  } catch (ex) { err.textContent = ex.message; }
+  finally { btn.disabled = false; btn.textContent = "Sign in"; }
 });
 async function start() {
-  const sess = await (await fetch("/api/session", { credentials: "same-origin" })).json();
-  if (sess.auth_required) return showLogin();
+  showScreen("boot");
+  $("#boot-text").textContent = "Loading the workbench…";
+  $("#boot-spinner").hidden = false;
+  $("#boot-retry").hidden = true;
   try {
+    const r = await fetchWithTimeout("/api/session", {}, 30000);
+    if (!r.ok) throw new Error(`The server answered ${r.status}. Try again in a moment.`);
+    const sess = await r.json();
+    if (sess.auth_required) return showLogin();
     [M, S] = await Promise.all([api("GET", "/api/meta"), api("GET", "/api/state")]);
-    $("#app").hidden = false;
+    showScreen("app");
     render();
-  } catch (e) { toast(e.message, true); }
+  } catch (e) { bootError(e.message); }
 }
 start();

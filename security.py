@@ -61,16 +61,21 @@ PROPERTY = {"Residential property", "Commercial property", "Industrial property 
 REVALUE_YEARS = 3  # property valuations are usually refreshed every 3 years
 
 
+CASH_MARGIN = "Cash margin"  # already deducted from the exposure it backs, so it is not counted again as cover
+
+
 def realisable(sec: dict) -> float:
-    """Value counted towards cover; guarantees count as nil (they are recourse, not realisable assets)."""
-    if SECURITY_TYPES[sec["kind"]][0] == "Guarantee":
+    """Value counted towards cover. Guarantees count as nil (they are recourse, not realisable assets), and so does
+    the cash margin on non-fund limits, because the exposure to be covered is already net of it."""
+    if SECURITY_TYPES[sec["kind"]][0] == "Guarantee" or sec["kind"] == CASH_MARGIN:
         return 0.0
     return (sec.get("value") or 0) * (1 - (sec.get("margin_pct") or 0) / 100)
 
 
 def cover(securities: list, total_exposure: float) -> dict:
     tangible = sum(realisable(s) for s in securities)
-    market = sum((s.get("value") or 0) for s in securities if SECURITY_TYPES[s["kind"]][0] != "Guarantee")
+    market = sum((s.get("value") or 0) for s in securities
+                 if SECURITY_TYPES[s["kind"]][0] != "Guarantee" and s["kind"] != CASH_MARGIN)
     collateral = sum(realisable(s) for s in securities if SECURITY_TYPES[s["kind"]][0] == "Collateral")
     return {
         "market_value": market,
@@ -82,8 +87,10 @@ def cover(securities: list, total_exposure: float) -> dict:
     }
 
 
-def security_flags(securities: list, total_exposure: float, msme_class: str | None, fund_total: float) -> list:
-    """Returns [(severity, finding, next_step)]."""
+def security_flags(securities: list, total_exposure: float, msme_class: str | None, fund_total: float,
+                   cash_margins: float = 0.0) -> list:
+    """Returns [(severity, finding, next_step)]. cash_margins: cash margin on the non-fund limits, already netted
+    from total_exposure."""
     out, c = [], cover(securities, total_exposure)
     if not securities:
         out.append(("High", "No security offered", "Ask the client what security they can offer"))
@@ -109,6 +116,10 @@ def security_flags(securities: list, total_exposure: float, msme_class: str | No
         if s.get("owner_is_third_party"):
             out.append(("Low", f"{s['kind']} is owned by a third party ({s.get('owner') or 'n/a'})",
                         "Take the owner's guarantee and consent to mortgage"))
+    if cash_margins and any(s["kind"] == "Fixed deposit" for s in securities):
+        out.append(("Low", "A fixed deposit is offered as security and the non-fund limits also carry a cash margin, which "
+                           "is already deducted from the exposure", "If the FD is that cash margin, record it as "
+                           "'Cash margin' so it is not counted twice"))
     has_cgtmse = any(s["kind"] == "CGTMSE cover" for s in securities)
     if has_cgtmse and (msme_class not in ("Micro", "Small") or fund_total > 1e8):
         out.append(("High", "CGTMSE cover selected but the borrower is not a micro/small enterprise or the exposure exceeds ₹10 Cr",

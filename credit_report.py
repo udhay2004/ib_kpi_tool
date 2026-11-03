@@ -20,6 +20,7 @@ import pandas as pd
 import kpis
 import kyc
 import loans
+import repayment as rp
 import security as sec
 
 A4 = fitz.paper_rect("a4")
@@ -243,7 +244,7 @@ def _summary(s, info):
     case, b, t, cov, dt, cap = s["case"], s["case"]["borrower"], s["totals"], s["cover"], s["dscr"], s["capacity"]
     fl = s["flags"]
     n = {k: int((fl["severity"] == k).sum()) if not fl.empty else 0 for k in ("High", "Medium", "Low")}
-    th = kpis.THRESHOLDS
+    th = s.get("thresholds") or kpis.THRESHOLDS
     fk = s["res"]["fin_kpis"] if s["res"] is not None else pd.DataFrame()
     fy = s["fin"].get("fy") if s["fin"] else None
 
@@ -252,7 +253,7 @@ def _summary(s, info):
             return None
         v = fk.at[key, fy]
         return None if _na(v) else v
-    mn = None if dt is None or dt.empty else float(dt["dscr"].min())
+    mn = rp.dscr_range(dt)[0]
     metrics = [
         ("Total proposed", e(inr(t["total"])), "", None),
         ("Net exposure (after cash margins)", e(inr(t["net_exposure"])), "", None),
@@ -590,7 +591,7 @@ def _repayment(s, schedules):
              for i, o in enumerate(obs, 1)], num_cols=(3, 4, 5, 6, 7))
     f = foir(s)
     if f:
-        th = kpis.THRESHOLDS["foir_max"]
+        th = (s.get("thresholds") or kpis.THRESHOLDS)["foir_max"]
         word = status("good" if f["foir"] <= th else "critical", f"{f['foir']:.0%}")
         out += (f'<p><b>FOIR after this proposal:</b> {word} against '
                 f'a {th:.0%} cap (income {e(inr(f["income"]))} a month from PAT + depreciation; existing EMI {e(inr(f["existing"]))}; '
@@ -613,9 +614,9 @@ def _repayment(s, schedules):
              "Total debt service", "DSCR"],
             [[e(int(r["year"])), lakh(r["cash_accrual"]), lakh(r["available_for_debt_service"]), lakh(r["new_interest"]),
               lakh(r["new_principal"]), lakh(r["existing_debt_service"]), lakh(r["total_debt_service"]),
-              f'<b>{r["dscr"]:.2f}x</b>'] for _, r in dt.iterrows()],
-            num_cols=tuple(range(8)), row_class=["High" if r["dscr"] < kpis.THRESHOLDS["dscr_min"] else None
-                                                for _, r in dt.iterrows()])
+              f'<b>{e(val(r["dscr"], "x"))}</b>'] for _, r in dt.iterrows()],
+            num_cols=tuple(range(8)), row_class=["High" if not _na(r["dscr"]) and r["dscr"] < (s.get("thresholds") or kpis.THRESHOLDS)["dscr_min"]
+                                                else None for _, r in dt.iterrows()])
     names = {f["id"]: f["product"] for f in s["case"]["facilities"]}
     for fid, sc in (schedules or {}).items():
         if sc is None or sc.empty:
