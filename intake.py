@@ -1,6 +1,8 @@
 """Document checklist, ZIP intake and coverage check (what was asked for vs. what arrived)."""
 
 import io
+import re
+import unicodedata
 import zipfile
 
 import pandas as pd
@@ -47,34 +49,73 @@ def guess_type(path: str) -> str:
     return "auto"
 
 
-def unzip(data: bytes, max_files: int = 300, max_total_mb: int = 500):
-    """Returns ([(path, bytes)], [skipped messages]). Nothing is written to disk."""
+ARCHIVES = {".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz"}
+MB = 1024 * 1024
+
+
+def clean_path(name: str) -> str:
+    """A ZIP member name made safe to show and keep: no control characters, no '..' or absolute parts, forward
+    slashes, at most the last three folders and 200 characters. Nothing is ever written to disk."""
+    n = re.sub(r"[\x00-\x1f\x7f]", "", unicodedata.normalize("NFC", name)).replace("\\", "/")
+    parts = [p for p in n.split("/") if p not in ("", ".", "..") and not re.fullmatch(r"[A-Za-z]:", p)]
+    return "/".join(parts[-3:])[-200:]
+
+
+def unzip(data: bytes, max_files: int = 300, max_total_mb: int = 200, max_file_mb: int = 50, max_ratio: int = 200):
+    """Returns ([(path, bytes)], [skipped messages]). Nothing is written to disk.
+
+    Guards against ZIP bombs and odd archives: at most max_files files, max_file_mb per file and max_total_mb in
+    all once expanded (checked against what is actually read, not just the sizes the archive claims), members
+    that expand more than max_ratio times are refused, archives inside the archive are skipped, names are cleaned,
+    and a damaged or encrypted member is skipped with a message instead of failing the whole upload."""
     files, skipped, total = [], [], 0
     try:
         zf = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile:
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, ValueError, OSError):
         return [], ["Not a valid ZIP file"]
     with zf:
-        for info in zf.infolist():
-            name = info.filename
+        infos = zf.infolist()
+        if len(infos) > max_files * 10:
+            return [], [f"ZIP has {len(infos)} entries - more than this app reads ({max_files} files)"]
+        for info in infos:
+            name = clean_path(info.filename)
             base = name.rsplit("/", 1)[-1]
-            if info.is_dir() or name.startswith("__MACOSX") or base.startswith((".", "~$")):
+            if info.is_dir() or not base or name.startswith("__MACOSX") or base.startswith((".", "~$")):
                 continue
             ext = "." + base.rsplit(".", 1)[-1].lower() if "." in base else ""
-            if ext == ".zip":
-                skipped.append(f"{name}: ZIP inside ZIP - extract it and upload separately")
+            if ext in ARCHIVES:
+                skipped.append(f"{name}: archive inside the ZIP - extract it and upload separately")
                 continue
             if ext not in SUPPORTED:
                 skipped.append(f"{name}: unsupported file type")
                 continue
-            total += info.file_size
-            if len(files) >= max_files or total > max_total_mb * 1024 * 1024:
-                skipped.append(f"{name}: ZIP limit reached ({max_files} files / {max_total_mb} MB)")
+            if len(files) >= max_files:
+                skipped.append(f"{name}: ZIP limit reached ({max_files} files)")
+                continue
+            if info.file_size > max_file_mb * MB:
+                skipped.append(f"{name}: larger than {max_file_mb} MB once expanded")
+                continue
+            if info.compress_size and info.file_size / info.compress_size > max_ratio and info.file_size > MB:
+                skipped.append(f"{name}: compressed {info.file_size // max(info.compress_size, 1)}:1 - refused as a "
+                               "possible ZIP bomb")
+                continue
+            if total + info.file_size > max_total_mb * MB:
+                skipped.append(f"{name}: ZIP limit reached ({max_total_mb} MB in all)")
                 continue
             try:
-                files.append((name, zf.read(info)))
+                with zf.open(info) as f:  # read at most the declared size + 1 byte, so a lying header can't overrun
+                    content = f.read(info.file_size + 1)
+                if len(content) > info.file_size:
+                    skipped.append(f"{name}: size does not match the ZIP header - skipped")
+                    continue
             except RuntimeError:
                 skipped.append(f"{name}: ZIP is password protected - upload this file individually")
+                continue
+            except (zipfile.BadZipFile, NotImplementedError, OSError, EOFError, ValueError) as ex:
+                skipped.append(f"{name}: could not be read from the ZIP ({type(ex).__name__})")
+                continue
+            total += len(content)
+            files.append((name, content))
     return files, skipped
 
 

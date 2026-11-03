@@ -61,10 +61,10 @@ def break_even_fall(target, schedules, cash_accrual, ei, ep, wc, growth, tax) ->
 
 
 def assess(res: dict | None, facilities: list, build_schedules, dscr_cfg: dict, cover: dict | None = None,
-           wc_interest_fn=None) -> dict | None:
+           wc_interest_fn=None, th: dict | None = None) -> dict | None:
     """res: output of kpis.analyse (or None). build_schedules(rate_add_pct) -> list of new term-loan schedules.
     wc_interest_fn(rate_add_pct) -> annual interest on new CC/OD at the assumed utilisation.
-    Returns None without financials."""
+    th: the case's benchmarks (defaults if None). Returns None without financials."""
     if not res or res["fin_kpis"].empty:
         return None
     fk, fin, bk = res["fin_kpis"], res["tables"]["financials"], res["bank_kpis"]
@@ -81,16 +81,22 @@ def assess(res: dict | None, facilities: list, build_schedules, dscr_cfg: dict, 
     wc = (wc_interest_fn or (lambda r: 0.0))
     sch = build_schedules(0)
     revenue, ebitda = _kpi(fk, "revenue", fy), _kpi(fk, "ebitda", fy)
-    th = THRESHOLDS
+    th = th or THRESHOLDS
 
     # ---------------------------------------------------------------- base and stress
     cogs = _fin(fin, "cost_of_materials_and_purchases", fy)
     contribution = 1 - cogs / revenue if cogs and revenue else min(1.0, 2 * (ebitda / revenue)) if ebitda and revenue else 0.3
     keep = 1 - tax / 100
 
+    debt_existing = _kpi(fk, "total_debt", fy) or 0
+
     def scenario(rev_fall=0.0, rate_add=0.0, growth_=None):
         ca = accrual - (revenue or 0) * rev_fall * contribution * keep
-        return min_dscr(build_schedules(rate_add), ca, ei * (1 + rate_add / 10), ep, wc(rate_add),
+        # A rate rise of rate_add percentage points adds that % of the existing debt to existing interest
+        # (new facilities are re-priced in build_schedules / wc). Falls back to scaling the interest when the
+        # balance sheet has no debt figure.
+        ei_stress = ei + debt_existing * rate_add / 100 if debt_existing else ei * (1 + rate_add / 10)
+        return min_dscr(build_schedules(rate_add), ca, ei_stress, ep, wc(rate_add),
                         growth if growth_ is None else growth_, tax)
 
     base_min, base_avg, base_t = scenario()
@@ -149,7 +155,7 @@ def assess(res: dict | None, facilities: list, build_schedules, dscr_cfg: dict, 
         ("Average DSCR on proposal", f"{base_avg:.2f}x" if base_avg else "—", f"≥ {th['dscr_avg_min']:.2f}x",
          st_(base_avg, th["dscr_avg_min"], th["dscr_min"])),
         ("Cash left after debt service, tightest year", _inr(headroom), "", st_(headroom, 0.000001, 0)),
-        ("Earnings can fall before DSCR < 1.25x", "—" if be_125 is None else f"{be_125:.0%}", "≥ 20% comfortable",
+        (f"Earnings can fall before DSCR < {th['dscr_min']:.2f}x", "—" if be_125 is None else f"{be_125:.0%}", "≥ 20% comfortable",
          st_(be_125, 0.20, 0.05)),
         ("Earnings can fall before DSCR < 1.0x", "—" if be_100 is None else f"{be_100:.0%}", "", st_(be_100, 0.30, 0.10)),
         ("Debt / EBITDA after proposal", "—" if lev_post is None else f"{lev_post:.1f}x", "≤ 3.5x",
@@ -231,15 +237,15 @@ def assess(res: dict | None, facilities: list, build_schedules, dscr_cfg: dict, 
     if bounces is not None:
         ev.append("No outward cheque / EMI bounces." if bounces == 0 else
                   f"{bounces} outward bounce(s) in {int(months or 0)} months, within the usual tolerance."
-                  if bounces < THRESHOLDS["bounces_refer"]
+                  if bounces < th["bounces_refer"]
                   else f"{bounces} outward bounces in {int(months or 0)} months — repayment discipline is a concern.")
     gst = res["flags"][res["flags"]["area"] == "GST vs books"] if not res["flags"].empty else pd.DataFrame()
     if not gst.empty:
         ev.append("GST turnover does not match the books: " + gst.iloc[0]["finding"] + ".")
     if ev:
         worst_ev = max([s for s in (st_(credits_vs_rev, 0.8, 0.6), st_(burden, 0.30, 0.45, higher=False),
-                                    "critical" if bounces and bounces >= THRESHOLDS["bounces_high"] else
-                                    "warning" if bounces and bounces >= THRESHOLDS["bounces_refer"] else "good",
+                                    "critical" if bounces and bounces >= th["bounces_high"] else
+                                    "warning" if bounces and bounces >= th["bounces_refer"] else "good",
                                     "warning" if not gst.empty else "good") if s], key=STATUS_RANK.get)
         note("What the bank statements and GST show", worst_ev, " ".join(ev))
 

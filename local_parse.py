@@ -53,7 +53,7 @@ def to_num(s) -> float | None:
     if not t or t in {"-", "--", "—", "–", "nil", "Nil", "NIL"}:
         return None
     neg = t.startswith("(") and t.endswith(")") or t.startswith("-")
-    if re.search(r"\bdr\.?$", t, re.I):
+    if re.search(r"(?:^|[\d\s.)])dr\.?$", t, re.I):  # '12.00 Dr' and '12.00Dr' (no space) are both debit balances
         neg = True
     t = re.sub(r"\s*(cr|dr)\.?$", "", t, flags=re.I)
     t = t.strip("()").lstrip("-").replace(",", "").strip()
@@ -307,11 +307,19 @@ def bank_transactions(data: bytes, ext: str) -> list[dict]:
     return txns
 
 
+LEGAL_WORDS = {"private", "pvt", "limited", "ltd", "llp", "company", "co", "the", "m/s", "ms", "and", "&"}
+
+
 def _related_pattern(names: list[str]):
-    toks = {w for n in names or [] for w in re.findall(r"[A-Za-z]{4,}", n)
-            if w.lower() not in {"private", "limited", "pvt", "ltd", "llp", "company", "industries", "enterprises",
-                                  "india", "director", "partner"}}
-    return re.compile(r"\b(" + "|".join(map(re.escape, toks)) + r")\b", re.I) if toks else None
+    """Matches narrations that name the borrower or one of its people. A name must appear in full (legal-form
+    words such as 'Pvt Ltd' left out), so a customer that shares one word with the borrower - 'Reliance Polymers'
+    for 'Demo Polymers' - is not taken for a related party. Single-word names need at least 5 letters."""
+    pats = set()
+    for n in names or []:
+        words = [w for w in re.findall(r"[A-Za-z]+", str(n)) if w.lower() not in LEGAL_WORDS]
+        if len(words) >= 2 or (len(words) == 1 and len(words[0]) >= 5):
+            pats.add(r"\b" + r"[\s.,&-]+".join(map(re.escape, words)) + r"\b")
+    return re.compile("|".join(sorted(pats)), re.I) if pats else None
 
 
 def bank_months(txns: list[dict], related_names: list[str] | None = None) -> list[dict]:

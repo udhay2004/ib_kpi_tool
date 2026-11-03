@@ -71,6 +71,15 @@ def yearly(df: pd.DataFrame) -> pd.DataFrame:
     return df.groupby("year")[["interest", "principal", "instalment"]].sum()
 
 
+def dscr_range(t: pd.DataFrame | None) -> tuple[float | None, float | None]:
+    """(minimum, average) DSCR of a dscr_projection() table. Years with no debt service at all have no DSCR and are
+    left out; both are None when there is no debt service in any year."""
+    if t is None or t.empty:
+        return None, None
+    d = pd.to_numeric(t["dscr"], errors="coerce").dropna()
+    return (float(d.min()), float(d.mean())) if not d.empty else (None, None)
+
+
 def dscr_projection(schedules: list, cash_accrual: float, existing_interest: float, existing_principal: float,
                     new_wc_interest: float, growth_pct: float = 0.0, tax_pct: float = 25.0) -> pd.DataFrame:
     """Year-by-year DSCR = (cash accrual + interest added back) / (interest + principal).

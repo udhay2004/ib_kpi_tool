@@ -12,3 +12,5 @@ services:
         sync: false
       - key: ANTHROPIC_API_KEY  # optional: only for scanned PDFs and valuation reports
         sync: false
+      - key: SESSION_SECRET     # optional: long random string that signs the sign-in cookie
+        generateValue: true

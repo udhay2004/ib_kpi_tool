@@ -162,9 +162,15 @@ def exposure(fac: dict) -> float:
 
 # ---------------------------------------------------------------- assessment
 
-def assess(fac: dict, fin: dict, securities_value: float = 0.0) -> dict:
+PROPERTY_KINDS = {"Residential property", "Commercial property", "Industrial property / factory", "Open land"}
+FINANCIAL_KINDS = {"Fixed deposit", "Listed shares", "Mutual fund units", "Life insurance policy (surrender value)", "Gold"}
+LAP_LTV = 0.60
+
+
+def assess(fac: dict, fin: dict, securities=0.0) -> dict:
     """fin: latest-year figures {revenue, growth, total_current_assets, total_current_liabilities,
-    short_term_borrowings}. Returns {eligible, method, workings, ok}."""
+    short_term_borrowings}. securities: the case's securities (or, for older callers, the property value).
+    Returns {eligible, method, workings, ok}."""
     p = product(fac["product"])
     m, amt = p["method"], fac.get("amount") or 0
     out = {"method": "", "eligible": None, "workings": []}
@@ -221,12 +227,26 @@ def assess(fac: dict, fin: dict, securities_value: float = 0.0) -> dict:
             out.update(method="Project cost less 25% margin", eligible=e)
         w.append("Debt-service capacity is tested on the repayment schedule (step 5)")
     elif m == "ltv":
-        if securities_value:
-            e = securities_value * 0.60
-            w.append(f"60% LTV on security value ₹{securities_value:,.0f} = ₹{e:,.0f}")
+        if isinstance(securities, (int, float)):
+            prop, financial = float(securities or 0), 0.0
+        else:
+            prop = sum(s.get("value") or 0 for s in securities if s.get("kind") in PROPERTY_KINDS)
+            financial = sum((s.get("value") or 0) * (1 - (s.get("margin_pct") or 0) / 100)
+                            for s in securities if s.get("kind") in FINANCIAL_KINDS)
+        if p["name"].startswith("Loan against FD"):
+            # Each FD / share / fund / policy / gold item counts at its value less the margin set for it in step 2
+            # (FD 10%, listed shares 50% ... by default), which is how banks set the drawing power.
+            if financial:
+                w.append(f"FD / securities value less their margins = ₹{financial:,.0f}")
+                out.update(method="Value less margin", eligible=financial)
+            else:
+                w.append("Add the FD / shares / mutual funds / LIC policy / gold in step 2 to test the limit")
+        elif prop:
+            e = prop * LAP_LTV
+            w.append(f"{LAP_LTV:.0%} LTV on property value ₹{prop:,.0f} = ₹{e:,.0f}")
             out.update(method="Loan-to-value", eligible=e)
         else:
-            w.append("Add the property / FD in step 2 to test loan-to-value")
+            w.append("Add the property in step 2 to test loan-to-value")
     elif m == "lrd":
         rent, n, r = fac.get("monthly_rent") or 0, fac.get("lease_remaining_months") or 0, (fac.get("rate_pct") or 0) / 1200
         if rent and n:

@@ -140,7 +140,7 @@ def demo_case() -> dict:
             s("Stock (inventory)", 510 * L, description="Raw material, WIP and finished goods"),
             s("Book debts / receivables (< 90 days)", 760 * L, description="Domestic receivables under 90 days"),
             s("Plant & machinery", 540 * L, description="New extrusion line (to be financed)"),
-            s("Fixed deposit", 32.5 * L, description="Cash margin FD for BG / LC"),
+            s("Cash margin", 32.5 * L, description="FD under lien as cash margin for the BG and LC"),
             s("Personal guarantee", 0.0, owner="Director A", description="Managing director"),
         ],
         "repay": {"tl01": {"method": "Step-up instalments", "freq": "Monthly", "step_up_pct": 10.0,

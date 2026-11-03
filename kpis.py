@@ -7,15 +7,17 @@ Register idea: evidence-linked, severity-scored, never a decision.
 
 Benchmarks are common Indian bank / NBFC appraisal norms (PSB credit policies,
 Tandon/Nayak working-capital norms, bank-statement-analysis practice). They
-vary by lender - edit THRESHOLDS to match the policy you work to.
+vary by lender. THRESHOLDS holds the defaults and is never changed at run time:
+each case carries its own copy (thresholds()) that is passed to the functions here.
 """
 
+import math
 from dataclasses import dataclass, asdict
 from datetime import date
 
 import pandas as pd
 
-THRESHOLDS = {
+THRESHOLDS = {  # defaults - read-only; a case's own benchmarks come from thresholds()
     "current_ratio_benchmark": 1.33,   # Tandon 2nd method; ordinarily not below 1.17
     "current_ratio_floor": 1.17,
     "dscr_min": 1.25,                  # any single year
@@ -39,6 +41,22 @@ THRESHOLDS = {
     "top5_customer_share_max": 0.60,
     "balance_to_inflow_min": 0.10,     # ABB below 10% of monthly inflows = thin cushion
 }
+
+
+def thresholds(overrides: dict | None = None) -> dict:
+    """The defaults with a case's own benchmarks on top. Unknown keys, non-numbers, negatives and infinities are
+    ignored, so a bad value can never break the analysis."""
+    th = dict(THRESHOLDS)
+    for k, v in (overrides or {}).items():
+        if k not in th or isinstance(v, bool):
+            continue
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(f) and f >= 0:
+            th[k] = f
+    return th
 
 
 @dataclass
@@ -175,7 +193,7 @@ FIN_KPIS = [
     ("current_ratio", "Current ratio", "x", "Current assets / current liabilities"),
     ("quick_ratio", "Quick ratio", "x", "(Current assets - inventory) / current liabilities"),
     ("debt_equity", "Debt / equity", "x", "Total debt / TNW"),
-    ("tol_tnw", "TOL / TNW", "x", "(Total assets - TNW) / TNW"),
+    ("tol_tnw", "TOL / TNW", "x", "(Total assets - net worth) / TNW"),
     ("adj_tol_tnw", "TOL / adjusted TNW", "x", "Promoter unsecured loans treated as quasi-equity"),
     ("debt_ebitda", "Debt / EBITDA", "x", "Total debt / EBITDA"),
     ("interest_coverage", "Interest coverage", "x", "EBITDA / finance cost"),
@@ -334,9 +352,11 @@ def gst_kpis(gst: pd.DataFrame, customers: pd.DataFrame) -> pd.DataFrame:
     g["fy"] = g["period"].map(_fy_of)
     g = g[g["fy"].notna()]
     out = pd.DataFrame([{"fiscal_year": fy, **_gst_measures(grp)} for fy, grp in g.groupby("fy")])
-    if not customers.empty and not out.empty:
-        total = out["gst_turnover"].sum()
-        out["top5_customer_share"] = _div(customers.nlargest(5, "taxable_value")["taxable_value"].sum(), total)
+    if not customers.empty and not out.empty and "taxable_value" in customers:
+        # Customer lists come from the latest returns, so compare with the latest year's turnover only.
+        top5 = pd.to_numeric(customers["taxable_value"], errors="coerce").nlargest(5).sum(min_count=1)
+        out["top5_customer_share"] = None
+        out.loc[out.index[-1], "top5_customer_share"] = _div(top5, out["gst_turnover"].iloc[-1])
     return out
 
 
@@ -355,8 +375,9 @@ def gst_last_12_months(gst: pd.DataFrame) -> tuple[pd.DataFrame, dict | None]:
 
 # ---------------------------------------------------------------- checks / flags
 
-def risk_flags(t: dict, fk: pd.DataFrame, bk: pd.DataFrame, gk: pd.DataFrame, docs: list) -> list[Flag]:
-    th, flags = THRESHOLDS, []
+def risk_flags(t: dict, fk: pd.DataFrame, bk: pd.DataFrame, gk: pd.DataFrame, docs: list,
+               th: dict | None = None) -> list[Flag]:
+    th, flags = th or THRESHOLDS, []
     fin = t["financials"]
 
     def add(*a):
@@ -377,22 +398,22 @@ def risk_flags(t: dict, fk: pd.DataFrame, bk: pd.DataFrame, gk: pd.DataFrame, do
 
         cr = val("current_ratio")
         if cr is not None and cr < th["current_ratio_floor"]:
-            add("High", "Liquidity", f"Current ratio {cr:.2f}x in {fy} - below the 1.17x floor", ev,
+            add("High", "Liquidity", f"Current ratio {cr:.2f}x in {fy} - below the {th['current_ratio_floor']:.2f}x floor", ev,
                 "Review working-capital funding and creditor stretch")
         elif cr is not None and cr < th["current_ratio_benchmark"]:
-            add("Medium", "Liquidity", f"Current ratio {cr:.2f}x in {fy} - below the 1.33x benchmark", ev,
-                "Check margin money for working capital")
+            add("Medium", "Liquidity", f"Current ratio {cr:.2f}x in {fy} - below the {th['current_ratio_benchmark']:.2f}x benchmark",
+                ev, "Check margin money for working capital")
         checks = [
-            ("dscr", lambda v: v < th["dscr_min"], "High", "Debt service", "DSCR {v:.2f}x in {fy} - below 1.25x",
+            ("dscr", lambda v: v < th["dscr_min"], "High", "Debt service", f"DSCR {{v:.2f}}x in {{fy}} - below {th['dscr_min']:.2f}x",
              "Stress-test the repayment schedule"),
             ("interest_coverage", lambda v: v < th["interest_coverage_min"], "High", "Debt service",
-             "Interest coverage {v:.2f}x in {fy} - below 2.0x", "Check cost of debt and EBITDA quality"),
+             f"Interest coverage {{v:.2f}}x in {{fy}} - below {th['interest_coverage_min']:.1f}x", "Check cost of debt and EBITDA quality"),
             ("debt_equity", lambda v: v > th["debt_equity_max"], "Medium", "Leverage",
-             "Debt/TNW {v:.2f}x in {fy} - above 3.0x", "Assess further leverage capacity"),
+             f"Debt/TNW {{v:.2f}}x in {{fy}} - above {th['debt_equity_max']:.1f}x", "Assess further leverage capacity"),
             ("tol_tnw", lambda v: v > th["tol_tnw_max"], "Medium", "Leverage",
-             "TOL/TNW {v:.2f}x in {fy} - above 4.0x", "Check promoter unsecured loans (quasi-equity)"),
+             f"TOL/TNW {{v:.2f}}x in {{fy}} - above {th['tol_tnw_max']:.1f}x", "Check promoter unsecured loans (quasi-equity)"),
             ("debt_ebitda", lambda v: v > th["debt_ebitda_max"], "Medium", "Leverage",
-             "Debt/EBITDA {v:.2f}x in {fy} - above 3.5x", "Review debt capacity"),
+             f"Debt/EBITDA {{v:.2f}}x in {{fy}} - above {th['debt_ebitda_max']:.1f}x", "Review debt capacity"),
             ("receivable_days", lambda v: v > th["receivable_days_max"], "Medium", "Working capital",
              "Receivable days of {v:.0f} in {fy} - collections are slow", "Get debtor ageing; check related-party debtors"),
             ("pat", lambda v: v < 0, "High", "Profitability", "Net loss in {fy}", "Understand cause and path to profit"),
@@ -409,7 +430,7 @@ def risk_flags(t: dict, fk: pd.DataFrame, bk: pd.DataFrame, gk: pd.DataFrame, do
 
         dscrs = [fk.at["dscr", y] for y in years if _ok(fk.at["dscr", y])]
         if len(dscrs) > 1 and sum(dscrs) / len(dscrs) < th["dscr_avg_min"]:
-            add("Medium", "Debt service", f"Average DSCR {sum(dscrs) / len(dscrs):.2f}x - below the 1.50x norm",
+            add("Medium", "Debt service", f"Average DSCR {sum(dscrs) / len(dscrs):.2f}x - below the {th['dscr_avg_min']:.2f}x norm",
                 "All years", "Check repayment tenor / moratorium")
 
         rep = fin.at[fy, "ebitda_reported"] if "ebitda_reported" in fin else None
@@ -527,13 +548,13 @@ def scorecard(flags: pd.DataFrame) -> list[dict]:
     return out
 
 
-def analyse(docs: list, tables: dict | None = None) -> dict:
-    """tables: optional analyst-edited output of build_tables()."""
+def analyse(docs: list, tables: dict | None = None, th: dict | None = None) -> dict:
+    """tables: optional analyst-edited output of build_tables(). th: the case's benchmarks (defaults if None)."""
     t = tables or build_tables(docs)
     fk = financial_kpis(t["financials"]) if not t["financials"].empty else pd.DataFrame()
     bk = bank_kpis(t["bank"], t["counterparties"]) if not t["bank"].empty else pd.DataFrame()
     gk = gst_kpis(t["gst"], t["customers"]) if not t["gst"].empty else pd.DataFrame()
-    flags = pd.DataFrame([asdict(f) for f in risk_flags(t, fk, bk, gk, docs)],
+    flags = pd.DataFrame([asdict(f) for f in risk_flags(t, fk, bk, gk, docs, th)],
                          columns=["severity", "area", "finding", "evidence", "next_step"])
     return {"tables": t, "fin_kpis": fk, "bank_kpis": bk, "gst_kpis": gk, "flags": flags,
             "scorecard": scorecard(flags)}

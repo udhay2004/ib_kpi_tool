@@ -37,7 +37,7 @@ def test_demo_runs_every_section(client):
     assert s["fin"]["analysis"]["tiles"] and s["fin"]["review"]["financials"]["years"]
     assert s["repay"]["capacity"]["verdict"]["label"] == "Comfortable"
     assert len(s["repay"]["structure"]) == 4 and s["repay"]["dscr"]["tiles"]
-    assert s["security"]["tiles"][3]["value"] == "1.41x"
+    assert s["security"]["tiles"][3]["value"] == "1.39x"  # the cash-margin FD is already netted from exposure
     assert [x["name"] for x in s["summary"]["steps"]][0] == "Loan request"
     json.dumps(s)  # all JSON-safe
 
@@ -81,4 +81,5 @@ def test_password_gate(monkeypatch):
     assert c.get("/api/state").status_code == 401
     assert c.post("/api/login", json={"password": "nope"}).status_code == 401
     assert c.post("/api/login", json={"password": "secret"}).status_code == 200
+    assert c.get("/api/session").json()["auth_required"] is False  # the case starts only after sign-in
     assert c.get("/api/state").status_code == 200

@@ -28,7 +28,7 @@ def meta() -> dict:
         "security_types": {k: {"class": v[0], "charge": v[1], "margin": v[2], "docs": v[3]} for k, v in sec.SECURITY_TYPES.items()},
         "kyc_kinds": kyc.ALL_KINDS, "entity_kinds": list(kyc.ENTITY_DOCS), "person_kinds": list(kyc.PERSON_DOCS),
         "fin_types": FIN_TYPES, "checklist": CHECKLIST,
-        "repay_methods": rp.METHODS, "frequencies": list(rp.FREQUENCIES), "thresholds": kpis.THRESHOLDS,
+        "repay_methods": rp.METHODS, "frequencies": list(rp.FREQUENCIES), "threshold_defaults": kpis.THRESHOLDS,
     }
 
 
@@ -52,14 +52,14 @@ def _flags(df: pd.DataFrame) -> list:
     return records(df[["severity", "area", "finding", "evidence", "next_step"]]) if df is not None and not df.empty else []
 
 
-def _tile(fk, key, fy, prev, div, label=None):
+def _tile(fk, key, fy, prev, div, label, th_all):
     unit, v = fk.at[key, "unit"], fk.at[key, fy]
     t = {"label": label or fk.at[key, "KPI"], "value": fmt(unit, v, div), "status": None, "bench": "", "sub": ""}
     if prev is not None and pd.notna(fk.at[key, prev]):
         t["sub"] = f"{prev}: {fmt(unit, fk.at[key, prev], div)}"
     if key in BENCH and pd.notna(v):
         op, th_key, text = BENCH[key]
-        th = kpis.THRESHOLDS[th_key]
+        th = th_all[th_key]
         t["status"] = "good" if (v >= th if op == ">=" else v <= th) else "critical"
         t["bench"] = text.format(t=th)
     return t
@@ -70,7 +70,8 @@ def _tile(fk, key, fy, prev, div, label=None):
 def _security(ws, t) -> dict:
     c = sec.cover(ws.case["securities"], t["net_exposure"])
     st_ = None if c["cover"] is None else ("good" if c["cover"] >= 1.25 else "warning" if c["cover"] >= 1 else "critical")
-    flags = sec.security_flags(ws.case["securities"], t["net_exposure"], ws.case["borrower"]["msme_class"], t["fund"])
+    flags = sec.security_flags(ws.case["securities"], t["net_exposure"], ws.case["borrower"]["msme_class"], t["fund"],
+                               t["total"] - t["net_exposure"])
     suggestions = []
     for d in ws.as_dicts("sec_docs", ws.static_sec):
         x = d.get("extracted")
@@ -149,7 +150,7 @@ def _review(ws) -> dict | None:
     return out
 
 
-def _analysis(res, div, unit) -> dict | None:
+def _analysis(res, div, unit, th) -> dict | None:
     if not res:
         return None
     fk, bk, gk, flags = res["fin_kpis"], res["bank_kpis"], res["gst_kpis"], res["flags"]
@@ -159,7 +160,7 @@ def _analysis(res, div, unit) -> dict | None:
     if years:
         fy, prev = years[-1], (years[-2] if len(years) > 1 else None)
         out["tiles_title"] = fy
-        out["tiles"] = [_tile(fk, k, fy, prev, div, lbl) for k, lbl in (
+        out["tiles"] = [_tile(fk, k, fy, prev, div, lbl, th) for k, lbl in (
             ("revenue", f"Revenue ({unit})"), ("revenue_growth", None), ("ebitda_margin", None), ("pat_margin", None),
             ("dscr", None), ("current_ratio", None), ("debt_equity", "Debt / TNW"), ("tol_tnw", None))]
         out["fin_chart"] = {"labels": years, "series": {lbl: [None if na(v) else float(v) / div for v in fk.loc[k, years]]
@@ -265,21 +266,23 @@ def _repayment(ws, s, div, unit) -> dict | None:
                      f"interest {inr(fin.get('finance_cost'))} and principal {inr(fin.get('current_maturities'))} assumed to "
                      "continue (conservative).", "tiles": [], "table": None, "chart": None}
         if dt is not None and not dt.empty:
-            ds, th = dt["dscr"].dropna(), kpis.THRESHOLDS
+            (mn, avg), th = rp.dscr_range(dt), ws.th
             d["tiles"] = [
-                {"label": "Minimum DSCR", "value": f"{ds.min():.2f}x", "status": "good" if ds.min() >= th["dscr_min"] else "critical",
-                 "bench": f"≥ {th['dscr_min']:.2f}x"},
-                {"label": "Average DSCR", "value": f"{ds.mean():.2f}x",
-                 "status": "good" if ds.mean() >= th["dscr_avg_min"] else "critical", "bench": f"≥ {th['dscr_avg_min']:.2f}x"},
+                {"label": "Minimum DSCR", "value": "—" if mn is None else f"{mn:.2f}x",
+                 "status": None if mn is None else "good" if mn >= th["dscr_min"] else "critical", "bench": f"≥ {th['dscr_min']:.2f}x",
+                 "sub": "No debt service" if mn is None else ""},
+                {"label": "Average DSCR", "value": "—" if avg is None else f"{avg:.2f}x",
+                 "status": None if avg is None else "good" if avg >= th["dscr_avg_min"] else "critical",
+                 "bench": f"≥ {th['dscr_avg_min']:.2f}x"},
                 {"label": "Peak debt service", "value": inr(dt["total_debt_service"].max())},
                 {"label": "Years", "value": str(len(dt))}]
-            d["chart"] = {"labels": [f"Y{int(i)}" for i in dt["year"]], "series": {"DSCR": [float(v) for v in dt["dscr"]]},
+            d["chart"] = {"labels": [f"Y{int(i)}" for i in dt["year"]], "series": {"DSCR": [None if na(v) else float(v) for v in dt["dscr"]]},
                           "rule": th["dscr_min"]}
             show = dt.copy()
             for c in ("cash_accrual", "available_for_debt_service", "new_interest", "new_principal", "existing_debt_service",
                       "total_debt_service"):
                 show[c] = show[c].map(lambda v: f"{v / div:,.2f}")
-            show["dscr"] = show["dscr"].map(lambda v: f"{v:.2f}x")
+            show["dscr"] = show["dscr"].map(lambda v: "—" if na(v) else f"{v:.2f}x")
             show.columns = [c.replace("_", " ").capitalize() for c in show.columns]
             d["table"] = table(show)
         out["dscr"] = d
@@ -290,7 +293,8 @@ def _summary(ws, s, div) -> dict:
     t, cov, dt, res = s["totals"], s["cover"], s["dscr"], s["res"]
     fk = res["fin_kpis"] if res is not None else pd.DataFrame()
     fy = s["fin"].get("fy") if s["fin"] else None
-    th = kpis.THRESHOLDS
+    th = s["thresholds"]
+    mn = rp.dscr_range(dt)[0]
 
     def kv(key):
         return fk.at[key, fy] if fy and key in fk.index and pd.notna(fk.at[key, fy]) else None
@@ -308,14 +312,16 @@ def _summary(ws, s, div) -> dict:
             {"label": "Total proposed", "value": inr(t["total"]), "sub": f"Fund {inr(t['fund'])} · NFB {inr(t['nonfund'])}"},
             {"label": "Security cover", "value": "—" if cov["cover"] is None else f"{cov['cover']:.2f}x",
              "status": None if cov["cover"] is None else ("good" if cov["cover"] >= 1.25 else "critical"), "bench": "≥ 1.25x"},
-            {"label": "Min DSCR (proposal)", "value": "—" if dt is None or dt.empty else f"{dt['dscr'].min():.2f}x",
-             "status": None if dt is None or dt.empty else ("good" if dt["dscr"].min() >= th["dscr_min"] else "critical"),
+            {"label": "Min DSCR (proposal)", "value": "—" if mn is None else f"{mn:.2f}x",
+             "status": None if mn is None else ("good" if mn >= th["dscr_min"] else "critical"),
              "bench": f"≥ {th['dscr_min']:.2f}x"},
             {"label": f"Revenue {fy or ''}", "value": inr(kv("revenue"))},
             {"label": "Current ratio", "value": "—" if cr is None else f"{cr:.2f}x",
-             "status": None if cr is None else ("good" if cr >= th["current_ratio_benchmark"] else "critical"), "bench": "≥ 1.33x"},
+             "status": None if cr is None else ("good" if cr >= th["current_ratio_benchmark"] else "critical"),
+             "bench": f"≥ {th['current_ratio_benchmark']:.2f}x"},
             {"label": "TOL / TNW", "value": "—" if tol is None else f"{tol:.2f}x",
-             "status": None if tol is None else ("good" if tol <= th["tol_tnw_max"] else "critical"), "bench": "≤ 4.0x"},
+             "status": None if tol is None else ("good" if tol <= th["tol_tnw_max"] else "critical"),
+             "bench": f"≤ {th['tol_tnw_max']:.1f}x"},
             {"label": "High findings", "value": str(n["High"])}, {"label": "Medium findings", "value": str(n["Medium"])}],
         "capacity": None if cap is None else {"verdict": cap["verdict"], "notes": clean(cap["notes"])},
         "proposal": table(fac), "flags": _flags(fl),
@@ -334,6 +340,7 @@ def state(ws, unit: str, server_key: bool) -> dict:
     cov = coverage(fin_docs)
     out = {
         "case": clean(ws.case), "unit": unit, "server_key": server_key, "has_key": bool(server_key or ws.api_key),
+        "thresholds": ws.th,
         "totals": {**t, "text": {k: inr(v) for k, v in t.items()},
                    "with_existing": inr(t["total"] + (ws.case["borrower"].get("existing_exposure") or 0)),
                    "lei": t["total"] + (ws.case["borrower"].get("existing_exposure") or 0) >= 5e7},
@@ -345,7 +352,7 @@ def state(ws, unit: str, server_key: bool) -> dict:
                 "coverage": [dict(zip(("status", "label"), _status(r["Status"])), document=r["Document"], detail=r["Detail"])
                              for _, r in cov.iterrows()] if fin_docs else [],
                 "missing": [r["Document"] for _, r in cov.iterrows() if r["Status"].startswith("❌")],
-                "review": _review(ws), "analysis": _analysis(s["res"], div, unit)},
+                "review": _review(ws), "analysis": _analysis(s["res"], div, unit, s["thresholds"])},
         "repay": _repayment(ws, s, div, unit),
         "summary": _summary(ws, s, div),
     }

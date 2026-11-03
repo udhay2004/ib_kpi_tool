@@ -6,6 +6,8 @@ import io
 import json
 import math
 import re
+import threading
+import unicodedata
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -44,8 +46,121 @@ BENCH = {  # key -> (direction, threshold key, label)
 def new_case() -> dict:
     return {"borrower": {"name": "", "constitution": "Private limited company", "industry": "", "msme_class": "Not registered",
                          "years_in_business": 0, "existing_exposure": 0.0},
-            "facilities": [], "securities": [], "repay": {}, "client": {}, "report": {},
+            "facilities": [], "securities": [], "repay": {}, "client": {}, "report": {}, "thresholds": {},
             "dscr": {"growth_pct": 5.0, "tax_pct": 25.0, "wc_utilisation_pct": 80.0}}
+
+
+# ---------------------------------------------------------------- input checks
+
+MAX_TEXT = 4000
+MONEY_MAX = 1e13  # ₹1 lakh crore: anything above is a typing error
+LIMITS = {  # loans.F kind -> (low, high)
+    "money": (0.0, MONEY_MAX), "pct": (0.0, 100.0), "int": (0, 600), "days": (0, 3650)}
+
+
+def num(v, low=None, high=None, default=0.0, whole=False):
+    """A number from the browser or a case file: blanks, text, NaN and infinities become the default; the result is
+    clamped to [low, high]."""
+    if isinstance(v, bool) or v is None or v == "":
+        f = default
+    else:
+        try:
+            f = float(str(v).replace(",", "")) if isinstance(v, str) else float(v)
+        except (TypeError, ValueError):
+            f = default
+        if f is None or not math.isfinite(f):
+            f = default
+    if f is None:
+        return None
+    if low is not None:
+        f = max(low, f)
+    if high is not None:
+        f = min(high, f)
+    return int(round(f)) if whole else f
+
+
+def text(v, limit=MAX_TEXT) -> str:
+    return "" if v is None else str(v)[:limit]
+
+
+def ident(v) -> str:
+    """An id from the browser or a case file: letters, digits, '-' and '_' only (it ends up in HTML attributes)."""
+    return re.sub(r"[^A-Za-z0-9_-]", "", text(v, 40)) or new_id()
+
+
+def clean_case(raw) -> dict:
+    """The case as sent by the browser or read from a case file, made safe to calculate with: unknown products and
+    security kinds dropped, numbers forced into range, text trimmed. Never raises on bad input."""
+    if not isinstance(raw, dict):
+        raise ValueError("case must be a JSON object")
+    case = new_case()
+    b = raw.get("borrower") if isinstance(raw.get("borrower"), dict) else {}
+    case["borrower"] = {
+        "name": text(b.get("name"), 300),
+        "constitution": b.get("constitution") if b.get("constitution") in kyc.CONSTITUTIONS else "Private limited company",
+        "industry": text(b.get("industry"), 300),
+        "msme_class": b.get("msme_class") if b.get("msme_class") in MSME else "Not registered",
+        "years_in_business": num(b.get("years_in_business"), 0, 200, 0, whole=True),
+        "existing_exposure": num(b.get("existing_exposure"), 0, MONEY_MAX),
+    }
+    known = {p for _, _, p in loans.all_products()}
+    for f in raw.get("facilities") or []:
+        if not isinstance(f, dict) or f.get("product") not in known:
+            continue
+        out = {"id": ident(f.get("id")), "product": f["product"]}
+        for key, (field, _, kind, default, _) in loans.F.items():
+            if field not in f:
+                continue
+            if kind in LIMITS:
+                lo, hi = LIMITS[kind]
+                out[field] = num(f[field], lo, hi, default if isinstance(default, (int, float)) else 0,
+                                 whole=kind in ("int", "days"))
+            elif kind.startswith("choice:"):
+                opts = kind.split(":", 1)[1].split("|")
+                out[field] = f[field] if f[field] in opts else default
+            else:
+                out[field] = text(f[field])
+        for k, v in f.items():  # extra keys the forms set (e.g. tenor on non-fund limits) are kept if harmless
+            if k not in out and isinstance(v, (int, float, str)) and not isinstance(v, bool):
+                out[k] = num(v, 0, MONEY_MAX) if isinstance(v, (int, float)) else text(v)
+        if out.get("tenor_months") is not None and out.get("moratorium_months"):
+            out["moratorium_months"] = min(out["moratorium_months"], max(out["tenor_months"] - 1, 0))
+        case["facilities"].append(out)
+    for s in raw.get("securities") or []:
+        if not isinstance(s, dict) or s.get("kind") not in sec.SECURITY_TYPES:
+            continue
+        vd = s.get("valuation_date")
+        if isinstance(vd, str):
+            try:
+                vd = date.fromisoformat(vd[:10]) if vd else None
+            except ValueError:
+                vd = None
+        elif not isinstance(vd, date):
+            vd = None
+        case["securities"].append({
+            "id": ident(s.get("id")), "kind": s["kind"], "description": text(s.get("description")),
+            "owner": text(s.get("owner"), 300), "owner_is_third_party": bool(s.get("owner_is_third_party")),
+            "value": num(s.get("value"), 0, MONEY_MAX), "valuation_date": vd, "valuer": text(s.get("valuer"), 300),
+            "existing_charge": text(s.get("existing_charge"), 500),
+            "margin_pct": num(s.get("margin_pct"), 0, 100, float(sec.SECURITY_TYPES[s["kind"]][2])),
+            **({"from_doc": ident(s.get("from_doc"))} if s.get("from_doc") else {})})
+    ids = {f["id"] for f in case["facilities"]}
+    for fid, cfg in (raw.get("repay") or {}).items():
+        if fid in ids and isinstance(cfg, dict):
+            case["repay"][fid] = {
+                "method": cfg.get("method") if cfg.get("method") in rp.METHODS else "EMI – equated instalments",
+                "freq": cfg.get("freq") if cfg.get("freq") in rp.FREQUENCIES else "Monthly",
+                "step_up_pct": num(cfg.get("step_up_pct"), 0, 100, 10.0),
+                "structured": text(cfg.get("structured"), 200) or "10,15,20,25,30"}
+    d = raw.get("dscr") if isinstance(raw.get("dscr"), dict) else {}
+    case["dscr"] = {"growth_pct": num(d.get("growth_pct"), -50, 100, 5.0), "tax_pct": num(d.get("tax_pct"), 0, 60, 25.0),
+                    "wc_utilisation_pct": num(d.get("wc_utilisation_pct"), 0, 100, 80.0)}
+    case["client"] = raw.get("client") if isinstance(raw.get("client"), dict) else {}
+    case["report"] = {k: text(v) for k, v in (raw.get("report") or {}).items()} if isinstance(raw.get("report"), dict) else {}
+    th = raw.get("thresholds") if isinstance(raw.get("thresholds"), dict) else {}
+    defaults = kpis.THRESHOLDS
+    case["thresholds"] = {k: v for k, v in kpis.thresholds(th).items() if v != defaults[k]}  # only the changed ones
+    return case
 
 
 # ---------------------------------------------------------------- formatting
@@ -120,6 +235,9 @@ def table(df: pd.DataFrame) -> dict:
 
 class Workspace:
     def __init__(self):
+        # One request at a time per case: the server runs requests in threads, and two at once (say a read and an
+        # edit) must not interleave. Re-entrant because state() calls build().
+        self.lock = threading.RLock()
         self.reset()
 
     def reset(self):
@@ -132,16 +250,29 @@ class Workspace:
         self.last_run = {}
         self.api_key = None
 
+    @property
+    def th(self) -> dict:
+        """This case's benchmarks: the defaults with the case's own changes (saved in the case file)."""
+        return kpis.thresholds(self.case.get("thresholds"))
+
+    def set_thresholds(self, changes: dict):
+        merged = {**(self.case.get("thresholds") or {}), **{k: v for k, v in changes.items() if k in kpis.THRESHOLDS}}
+        self.case["thresholds"] = {k: v for k, v in kpis.thresholds(merged).items() if v != kpis.THRESHOLDS[k]}
+
+    def stored_bytes(self) -> int:
+        return sum(len(d.data) for store in self.stores.values() for d in store.values())
+
     def load_demo(self):
         key = self.api_key
         self.reset()
         self.api_key = key
-        self.case = {**new_case(), **demo_case()}
+        self.case = clean_case(demo_case())
         self.demo, self.static_kyc, self.static_sec = demo_docs(), demo_kyc(), demo_security_docs()
 
     # ------------------------------------------------ files
 
     def add_file(self, store: str, name: str, data: bytes, doc_type: str, person: str | None = None):
+        name = safe_name(name)
         doc = SourceDoc(doc_id="", filename=name, data=data)
         if any(d.sha256 == doc.sha256 for d in self.stores[store].values()):
             return None
@@ -161,6 +292,9 @@ class Workspace:
 
     def update_file(self, store: str, doc_id: str, doc_type: str | None = None, person: str | None = None):
         d = self.stores[store][doc_id]
+        allowed = FIN_TYPES if store == "docs" else kyc.ALL_KINDS if store == "kyc_docs" else {"security": ""}
+        if doc_type is not None and doc_type not in allowed:
+            raise ValueError(f"Unknown document type: {doc_type}")
         if doc_type is not None and doc_type != (d.doc_type or "auto"):
             d.doc_type = doc_type
             if store == "docs":
@@ -168,7 +302,7 @@ class Workspace:
                 d.status = "pending" if d.status in ("extracted", "failed") else d.status
                 self.tables = None
         if person is not None:
-            d.entity = person.strip() or None
+            d.entity = text(person, 200).strip() or None
 
     def remove_file(self, store: str, doc_id: str):
         self.stores[store].pop(doc_id, None)
@@ -248,10 +382,13 @@ class Workspace:
         docs = self.fin_docs()
         if not any(d.get("extracted") for d in docs):
             return None
-        return kpis.analyse(docs, self.tables)
+        return kpis.analyse(docs, self.tables, self.th)
 
     def set_tables(self, edited: dict):
-        """Analyst edits to the extracted tables: {financials|bank|gst|itr: [records]}."""
+        """Analyst edits to the extracted tables: {financials|bank|gst|itr: [records]}. Raises ValueError on a
+        malformed body."""
+        if not isinstance(edited, dict):
+            raise ValueError("tables must be a JSON object")
         base = self.base_tables()
         if base is None:
             return
@@ -259,8 +396,13 @@ class Workspace:
         for key, rows in edited.items():
             if key not in ("financials", "bank", "gst", "itr") or base[key].empty:
                 continue
-            df = pd.DataFrame(rows, columns=list(base[key].reset_index().columns) if key == "financials" else list(base[key].columns))
+            if not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+                raise ValueError(f"{key}: expected a list of rows")
+            cols = list(base[key].reset_index().columns) if key == "financials" else list(base[key].columns)
+            df = pd.DataFrame(rows, columns=cols)
             if key == "financials":
+                if df["fiscal_year"].isna().any() or df["fiscal_year"].duplicated().any():
+                    raise ValueError("financials: every row needs a different fiscal_year")
                 df = df.set_index("fiscal_year")
             for c in df.columns:
                 if c in base[key].columns and pd.api.types.is_numeric_dtype(base[key][c]):
@@ -304,9 +446,7 @@ class Workspace:
         return out
 
     def assessments(self, fin: dict) -> dict:
-        prop_value = sum(s.get("value") or 0 for s in self.case["securities"]
-                         if sec.SECURITY_TYPES[s["kind"]][0] == "Collateral")
-        return {f["id"]: loans.assess(f, fin, prop_value) for f in self.case["facilities"]}
+        return {f["id"]: loans.assess(f, fin, self.case["securities"]) for f in self.case["facilities"]}
 
     def wc_interest(self, rate_add: float = 0.0) -> float:
         u = self.case["dscr"]["wc_utilisation_pct"] / 100
@@ -324,7 +464,7 @@ class Workspace:
     def capacity_result(self, res):
         t = self.totals()
         return capacity.assess(res, self.case["facilities"], lambda r: list(self.schedules(r).values()), self.case["dscr"],
-                               sec.cover(self.case["securities"], t["net_exposure"]), self.wc_interest)
+                               sec.cover(self.case["securities"], t["net_exposure"]), self.wc_interest, self.th)
 
     def totals(self) -> dict:
         f = self.case["facilities"]
@@ -365,7 +505,8 @@ class Workspace:
             if a["ok"] is False:
                 add("High", "Eligibility", f"{f['product']}: requested {inr(f.get('amount'))} exceeds assessed {inr(a['eligible'])}",
                     "Step 5", "Reduce the limit or justify the excess")
-        for s, finding, n in sec.security_flags(case["securities"], t["net_exposure"], b["msme_class"], t["fund"]):
+        for s, finding, n in sec.security_flags(case["securities"], t["net_exposure"], b["msme_class"], t["fund"],
+                                                t["total"] - t["net_exposure"]):
             add(s, "Security", finding, "Step 2", n)
         for label in self.kyc_missing():
             add("Low", "KYC documents", f"Not attached: {label}", "Step 3", "Collect from the client for the credit file")
@@ -378,12 +519,14 @@ class Workspace:
             add("High" if cap["verdict"]["status"] == "critical" else "Medium", "Repayment capacity",
                 f"Repayment capacity: {cap['verdict']['label']} — {cap['verdict']['meaning']}", "Step 5",
                 "Restructure (tenor, moratorium, amount) or get additional security / guarantees")
-        if dt is not None and not dt.empty:
-            mn, avg = dt["dscr"].min(), dt["dscr"].mean()
-            if mn < kpis.THRESHOLDS["dscr_min"]:
-                add("High", "Repayment", f"Minimum DSCR on the proposal {mn:.2f}x (year {int(dt.loc[dt['dscr'].idxmin(), 'year'])})",
+        th = self.th
+        mn, avg = rp.dscr_range(dt)
+        if mn is not None:
+            if mn < th["dscr_min"]:
+                year = int(dt.loc[pd.to_numeric(dt["dscr"], errors="coerce").idxmin(), "year"])
+                add("High", "Repayment", f"Minimum DSCR on the proposal {mn:.2f}x (year {year})",
                     "Step 5", "Lengthen tenor, add moratorium, change repayment method or reduce the amount")
-            elif avg < kpis.THRESHOLDS["dscr_avg_min"]:
+            elif avg < th["dscr_avg_min"]:
                 add("Medium", "Repayment", f"Average DSCR on the proposal {avg:.2f}x", "Step 5", "Review repayment structure")
         flags = sorted(flags, key=lambda f: SEV_ORDER[f["severity"]])
         n_kyc, n_missing = len(self.kyc_docs()), len(self.kyc_missing())
@@ -397,7 +540,7 @@ class Workspace:
             ("Repayment", cap["verdict"]["status"] if cap is not None else "warning" if case["facilities"] else "critical"),
         ]
         return {"case": case, "res": res, "fin": fin, "totals": t, "cover": cov, "dscr": dt, "flags": pd.DataFrame(flags),
-                "facilities": pd.DataFrame(fac_rows), "steps": steps, "capacity": cap, "assessments": ass}
+                "facilities": pd.DataFrame(fac_rows), "steps": steps, "capacity": cap, "assessments": ass, "thresholds": th}
 
     # ------------------------------------------------ save / open
 
@@ -415,28 +558,44 @@ class Workspace:
         return json.dumps(payload, default=ser, indent=1)
 
     def load_case(self, raw: bytes):
-        data = json.loads(raw)
-        key = self.api_key
-        self.reset()
-        self.api_key = key
-        case = {**new_case(), **data["case"]}
-        for s in case.get("securities", []):
-            if isinstance(s.get("valuation_date"), str) and s["valuation_date"]:
-                s["valuation_date"] = date.fromisoformat(s["valuation_date"][:10])
-        self.case = case
-        self.demo = [d for d in data.get("financial_docs", []) if d.get("extracted")] or None
-        self.static_kyc = [{"doc_id": d["doc_id"], "filename": d["filename"], "person": d.get("person") or "",
-                            "doc_type": d["doc_type"] if d.get("doc_type") in kyc.ALL_KINDS
-                            else (d.get("extracted") or {}).get("doc_kind", "other")}
-                           for d in data.get("kyc_docs", [])] or None
-        self.static_sec = [d for d in data.get("security_docs", []) if d.get("extracted")] or None
+        """Opens a saved case file. It may come from anyone, so every part is checked; raises ValueError if the file
+        is not a usable case (the open case is left as it was)."""
+        try:
+            data = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as ex:
+            raise ValueError("not a JSON file") from ex
+        if not isinstance(data, dict) or not isinstance(data.get("case"), dict):
+            raise ValueError("no case in the file")
+
+        def docs(key, types):
+            out = []
+            for d in data.get(key) or []:
+                if not isinstance(d, dict) or not isinstance(d.get("extracted"), dict) and key != "kyc_docs":
+                    continue
+                doc_id = re.sub(r"[^A-Za-z0-9_-]", "", str(d.get("doc_id") or ""))[:12]
+                if not doc_id or (types and d.get("doc_type") not in types):
+                    continue
+                out.append({**d, "doc_id": doc_id, "filename": safe_name(d.get("filename") or doc_id)})
+            return out
+
+        new = Workspace()
+        new.api_key = self.api_key
+        new.case = clean_case(data["case"])
+        new.demo = docs("financial_docs", FIN_TYPES) or None
+        new.static_kyc = [{"doc_id": d["doc_id"], "filename": d["filename"], "person": text(d.get("person"), 200),
+                           "doc_type": d.get("doc_type") if d.get("doc_type") in kyc.ALL_KINDS else "other"}
+                          for d in docs("kyc_docs", None)] or None
+        new.static_sec = docs("security_docs", None) or None
+        try:
+            new.state()  # everything the screens and reports need must work before the case replaces this one
+        except Exception as ex:
+            raise ValueError(f"the case file could not be analysed ({type(ex).__name__})") from ex
+        for k in ("case", "stores", "next", "demo", "static_kyc", "static_sec", "tables", "zip_skipped", "last_run"):
+            setattr(self, k, getattr(new, k))
 
     def set_case(self, case: dict):
-        """The case as edited in the browser. Dates arrive as ISO strings."""
-        for s in case.get("securities", []):
-            v = s.get("valuation_date")
-            s["valuation_date"] = date.fromisoformat(v[:10]) if isinstance(v, str) and v else None
-        self.case = {**new_case(), **case}
+        """The case as edited in the browser (dates arrive as ISO strings). Checked by clean_case()."""
+        self.case = clean_case(case)
 
     # ------------------------------------------------ exports
 
@@ -520,7 +679,16 @@ class Workspace:
 
 
 def safe(name: str) -> str:
-    return re.sub(r'[\\/:*?"<>|]+', "", name)[:150]
+    return re.sub(r'[\\/:*?"<>|\x00-\x1f]+', "", name)[:150]
+
+
+def safe_name(name) -> str:
+    """A file name as shown and stored: Unicode normalised, no control characters, no '..' or absolute paths, at
+    most the last three folders of a ZIP path, 200 characters."""
+    n = unicodedata.normalize("NFC", str(name or ""))
+    n = re.sub(r"[\x00-\x1f\x7f]", "", n).replace("\\", "/")
+    parts = [p for p in n.split("/") if p not in ("", ".", "..") and not re.fullmatch(r"[A-Za-z]:", p)]
+    return "/".join(parts[-3:])[-200:] or "file"
 
 
 def new_id() -> str:
