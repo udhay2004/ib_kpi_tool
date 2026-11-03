@@ -22,7 +22,7 @@ ui.inject_css()
 # ---------------------------------------------------------------- access gate (hosted use)
 APP_PASSWORD = secret("APP_PASSWORD")
 if APP_PASSWORD and not ss.get("authed"):
-    ui.hero("Sign in to continue")
+    ui.hero("Sign in to continue", "Enter the team password to open the workbench.")
     with st.form("login"):
         pw = st.text_input("Team password", type="password")
         if st.form_submit_button("Sign in", type="primary"):
@@ -34,7 +34,7 @@ if APP_PASSWORD and not ss.get("authed"):
 
 init_state()
 SERVER_KEY = secret("ANTHROPIC_API_KEY")
-STEPS = ["① Loan request", "② Security", "③ KYC", "④ Financials", "⑤ Repayment", "⑥ Credit summary"]
+STEPS = ["Loan request", "Security", "KYC", "Financials", "Repayment", "Credit summary"]
 
 
 def load_demo():
@@ -44,28 +44,13 @@ def load_demo():
 
 
 def go(i: int):
-    ss.nav = STEPS[i]
+    ss.step_idx = i
 
 
 # ---------------------------------------------------------------- sidebar
 with st.sidebar:
-    st.markdown("### ⚙️ Settings")
-    api_key = SERVER_KEY
-    if SERVER_KEY:
-        st.caption("✓ API key configured on the server")
-    else:
-        api_key = st.text_input("Anthropic API key (optional)", type="password", placeholder="sk-ant-…",
-                                help="Not needed for digital PDFs, Excel or CSV: those are read on this server. "
-                                     "Only scanned documents and valuation reports use Claude. Used only in this "
-                                     "browser session; never saved.")
-    unit_label = st.segmented_control("Amounts in", list(UNITS), default="₹ Crore") or "₹ Crore"
-    div = UNITS[unit_label]
-    with st.expander("Credit benchmarks"):
-        st.caption("Common Indian bank / NBFC norms. Change them to your lender's policy.")
-        for k, v in kpis.THRESHOLDS.items():
-            kpis.THRESHOLDS[k] = st.number_input(k.replace("_", " ").capitalize(), value=float(v), key=f"th_{k}")
-    st.divider()
-    st.markdown("**Case**")
+    ui.side_brand()
+    ui.side_heading("Case")
     c1, c2 = st.columns(2)
     c1.button("Load demo", use_container_width=True, on_click=load_demo, help="A fictional company — no API key needed")
     c2.button("New case", use_container_width=True, on_click=reset_all)
@@ -75,19 +60,38 @@ with st.sidebar:
         load_case(case_file.getvalue())
         ss.opened_case = case_file.file_id
         st.rerun()
-    st.caption("Draft analysis. AI-extracted figures must be checked against the source documents. Documents go to "
-               "the Anthropic API and are not stored by this app; save the case file to keep your work.")
+    ui.side_heading("Display")
+    unit_label = st.segmented_control("Amounts in", list(UNITS), default="₹ Crore") or "₹ Crore"
+    div = UNITS[unit_label]
+    with st.expander("Credit benchmarks"):
+        st.caption("Common Indian bank / NBFC norms. Change them to your lender's policy.")
+        for k, v in kpis.THRESHOLDS.items():
+            kpis.THRESHOLDS[k] = st.number_input(k.replace("_", " ").capitalize(), value=float(v), key=f"th_{k}")
+    api_key = SERVER_KEY
+    if not SERVER_KEY:
+        with st.expander("Claude API key (scanned documents)"):
+            api_key = st.text_input("Anthropic API key", type="password", placeholder="sk-ant-…",
+                                    help="Not needed for digital PDFs, Excel or CSV: those are read on this server. "
+                                         "Only scanned documents and valuation reports use Claude. Used only in this "
+                                         "browser session; never saved.")
+    st.markdown('<div class="side-note">Draft analysis. Figures read from documents must be checked against the '
+                'originals. Save the case file to keep your work.</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------------- header + stepper
 b = ss.case["borrower"]
 t = facility_totals(ss.case["facilities"])
-chip = f"{b['name']} · {inr(t['total'])} proposed" if b["name"] or t["total"] else None
-ui.hero("Loan request → security → KYC → financials → repayment → credit note", chip, title="Credit Appraisal Workbench")
+idx = ss.setdefault("step_idx", 0)
+chips = [("Proposed", inr(t["total"]))] if t["total"] else []
+chips += [("Facilities", str(len(ss.case["facilities"])))] if ss.case["facilities"] else []
+chips += [("Step", f"{idx + 1} of {len(STEPS)}")]
+ui.hero(b["name"] or "New credit case",
+        (f"{b['constitution']} · {b['industry']}" if b["industry"] else b["constitution"]) if b["name"] else
+        "Loan request, security, KYC, financials and repayment, then the credit report for the bank.", chips)
 
-ss.setdefault("nav", STEPS[0])
-choice = st.segmented_control("Step", STEPS, key="nav", label_visibility="collapsed")
-idx = STEPS.index(choice) if choice in STEPS else ss.get("last_idx", 0)
-ss.last_idx = idx
+with st.container(key="stepper"):
+    for i, (col, name) in enumerate(zip(st.columns(len(STEPS)), STEPS)):
+        col.button(f"{i + 1}  {name}", key=f"step_{i}", on_click=go, args=(i,),
+                   type="primary" if i == idx else "secondary", use_container_width=True)
 st.write("")
 
 if idx == 0:
@@ -112,6 +116,6 @@ else:
 st.write("")
 c1, _, c3 = st.columns([1, 3, 1])
 if idx > 0:
-    c1.button(f"← {STEPS[idx - 1][2:]}", on_click=go, args=(idx - 1,), use_container_width=True)
+    c1.button(f"← {STEPS[idx - 1]}", on_click=go, args=(idx - 1,), use_container_width=True)
 if idx < len(STEPS) - 1:
-    c3.button(f"{STEPS[idx + 1][2:]} →", on_click=go, args=(idx + 1,), type="primary", use_container_width=True)
+    c3.button(f"{STEPS[idx + 1]} →", on_click=go, args=(idx + 1,), type="primary", use_container_width=True)
