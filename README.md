@@ -1,10 +1,20 @@
 # Credit Appraisal Workbench
 
 A guided credit-appraisal case file for Indian business loans: a web app (HTML, CSS and JavaScript in `static/`) on a
-Python API (`server.py`, FastAPI) that does the reading, the analysis and the PDF reports. Six steps:
+Python API (`server.py`, FastAPI) that does the reading, the analysis and the PDF reports. Seven steps, in any order;
+only the borrower's name and constitution are needed to start, and everything else is optional:
 
 | Step | What happens |
 |---|---|
+| ① Borrower & repayment potential | Credit scores (300-900, banded strong / good / fair / weak, or "new to credit"), income sources (monthly or annual, stable / variable / one-off, proof), net worth (assets less liabilities, self-declared or documented), past repayment record (rated clean / satisfactory / weak / adverse) and existing liabilities. The **repayment-potential panel** works out eligible income, existing obligations, FOIR, the room for a new EMI and the indicative maximum loan at an editable rate and tenure, with a verdict (Strong / Adequate / Stretched / Weak) that says what is missing. Client details (fact-find) sit below. |
+| ② Security (optional) | "Offering security?" Yes / No / Decide later. "No" skips the step: cover shows n/a - unsecured. Otherwise property, plant & machinery, stock, receivables, vehicles, FD, shares, MF, LIC, gold, G-Secs, SGBs, NSC / KVP, listed bonds, lease rentals, cash margin, guarantees, CGTMSE; editable margins give realisable value and **security cover**. Warnings (never blocks) when a secured product has no security or an unsecured one has security, and a note that unsecured requests usually price higher. |
+| ③ Product | A three-level taxonomy on every facility: **Equity** (equity shares, CCPS, CCD, preference shares, promoter infusion - kept apart from debt) or **Debt** → **fund based** / **non-fund based** → **secured** / **unsecured** (a default per product the analyst can override), then a filtered product list or a search of all 31 facilities. Non-fund limits get utilisation, margin money and a fund-based equivalent through an editable credit conversion factor. Each facility asks for its own fields. |
+| ④ KYC (optional) | Checklist by constitution, split into "Required by bank policy (if applicable)" and "Recommended". Each document is attached, or marked provided / not available / not applicable; nothing blocks. Missing items are information in the file, not errors. Files are documentation only, not read or verified. |
+| ⑤ Financials (optional) | Audited financials, bank statements, GST, optional ITRs → KPIs, cross-checks, red flags (details below). Works with whatever is provided. |
+| ⑥ Repayment | Step 1's room for a new EMI against the proposal's monthly outgo and FOIR after it; DSCR year by year, stress tests, the repayment structure per facility and eligibility (turnover method, MPBF, LTV, LRD…). |
+| ⑦ Credit summary | Readiness per step (Complete / Partial / Skipped (optional) / Not started), key numbers, repayment potential, the debt proposal with its classification, equity separately, every finding. Downloads: the **credit report (PDF)**, **CAM-Lite**, Excel credit note, credit file ZIP and the case file (.json). Case files from the six-step version still open. |
+
+---|---|
 | ① Loan request | Borrower profile (constitution, MSME class, existing exposure). Pick from 30 facilities: **fund based** (CC, OD, WCDL, bill discounting, supply-chain finance, packing credit, post-shipment, term loans, machinery, vehicle, project, construction, LAP, LRD, unsecured, bridge, acquisition, loan against FD) and **non-fund based** (financial / performance / bid / advance-payment / retention / customs guarantees, DPG, SBLC, letters of credit, co-acceptance, partial credit enhancement, derivative limits). Each facility asks for its own fields. |
 | ② Security | Property, plant & machinery, stock, receivables, vehicles, FD, shares, MF, LIC, gold, lease rentals, cash margin, personal and corporate guarantees, CGTMSE. Market value → realisable value via editable margins → **security cover**. Upload valuation reports and title deeds; Claude reads them and you can add each one as a security with one click. Flags stale valuations (> 3 yrs), existing charges, third-party ownership and CGTMSE eligibility (MSE, ≤ ₹10 Cr). |
 | ③ KYC | Document checklist by constitution (RBI KYC Master Direction): COI, MOA, AOA, PAN, GST, board resolution, shareholding, address proof (+ Udyam, LEI if applicable); PAN + ID proof for each director / partner / guarantor. Files are **attached to the credit file as documentation only, not read or verified**. The type is guessed from the file name and can be corrected. |
@@ -44,26 +54,27 @@ Always check the **Review** tab: the parser is rule-based and unusual layouts ca
 
 Two PDFs. The **bank report** follows the loan detail sheet; the **CAM-Lite** (`cam_lite.py`) is the internal deal
 assessment in the Connect Ventures template, kept out of the bank report and the ZIP. Client details from the fact-find
-form are entered at the end of step 1. The bank report runs in this order:
+form are entered in step 1. The bank report runs in this order:
 
 - **Cover** — company name first, then proposal details and contents
 1. Company KYC — company details, document list, what is still missing, then the documents themselves
 2. Director KYC — directors / promoters / guarantors, document list, then the documents themselves
-3. Financials — last 2 years: summary financials and ratios
-4. GST — last 12 months: measures for the period, return-wise table, largest customers
-5. Proposed plan — facilities, terms and assessment of limits (turnover method / MPBF / project cost / NFB)
-6. Security — each item with charge, value, margin, realisable value; cover; documents needed to create the charge
-7. Repayment — verdict, written observations, measures, stress tests, DSCR by year, repayment schedules
+3. Borrower profile & repayment potential — scores, income, net worth, repayment record, liabilities, FOIR and headroom
+4. Financials — last 2 years: summary financials and ratios
+5. GST — last 12 months: measures for the period, return-wise table, largest customers
+6. Proposed plan — debt with its classification, non-fund limits, equity separately, totals by class, assessment of limits
+7. Security — each item (or 'not applicable — unsecured') with charge, value, margin, realisable value; cover; documents needed to create the charge
+8. Repayment — verdict, written observations, measures, stress tests, DSCR by year, repayment schedules
 
-Supporting sections follow: 8. Banking conduct · 9. Promoters' ITRs · 10. Overall assessment and your recommendation ·
-11. Risks and mitigants · 12. Compliance checks for the bank — credit bureau, RBI wilful-defaulter list, CKYC, GSTIN,
+Supporting sections follow: 9. Banking conduct · 10. Promoters' ITRs · 11. Overall assessment and your recommendation ·
+12. Risks and mitigants · 13. Compliance checks for the bank — credit bureau, RBI wilful-defaulter list, CKYC, GSTIN,
 CRILC (≥ ₹5 Cr), MCA charges, Udyam, legal / valuation, CERSAI, ECGC (exports), site visit, with a blank column for the
-bank's remarks · 13. Suggested terms and conditions · 14. Other documents relied on · 15. Basis of preparation and signature
+bank's remarks · 14. Suggested terms and conditions · 15. Other documents relied on · 16. Basis of preparation and signature
 
 Then the **annexures**: the financial and security files. All files are merged into the same PDF (PDFs as they are,
 photos / scans on A4 pages), each page stamped with its reference (CK1, DK1, A1...). Excel, Word and CSV files are listed
 and go in the ZIP instead. Password-protected PDFs must be unlocked in the app first. The PDF has bookmarks for every
-section and document. KYC is attached as received; verification and the checks in section 12 are for the bank.
+section and document. KYC is attached as received; verification and the checks in section 13 are for the bank.
 
 ## Run locally
 
@@ -156,7 +167,7 @@ cash conversion cycle, CFO/EBITDA, free cash flow.
 
 ## Files
 
-`static/` the web front end (`index.html`, `app.css`, `app.js`) · `server.py` the API and sign-in · `engine.py` one case and
+`static/` the web front end (`index.html`, `app.css`, `app.js`) · `server.py` the API and sign-in · `borrower.py` step 1 repayment potential · `engine.py` one case and
 everything worked out from it · `views.py` the JSON each screen shows · `cam_lite.py` internal CAM · `checklist.py` document checklist ·
 `loans.py` facility catalogue and eligibility · `security.py` security types and cover · `kyc.py` KYC checklist and file-name
 guessing · `repayment.py` schedules and DSCR · `intake.py` checklist, ZIP sorting, coverage ·

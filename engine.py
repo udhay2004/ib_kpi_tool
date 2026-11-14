@@ -16,6 +16,7 @@ from datetime import date, datetime
 import numpy as np
 import pandas as pd
 
+import borrower as bw
 import cam_lite
 import capacity
 import credit_report
@@ -43,11 +44,43 @@ BENCH = {  # key -> (direction, threshold key, label)
 }
 
 
+CASE_VERSION = 2  # 1: six-step flow (no borrower profile, security assumed, no equity / KYC statuses)
+
+STEPS = ["Borrower & repayment potential", "Security", "Product", "KYC", "Financials", "Repayment", "Credit summary"]
+STATES = {"Complete": "good", "Partial": "warning", "Skipped (optional)": "info", "Not started": None}
+
+
+def new_profile() -> dict:
+    return {"no_score": False, "scores": [], "income": [], "assets": [], "liabilities": [], "history": [],
+            "obligations": [], "rate_pct": 11.0, "tenure_months": 60}
+
+
 def new_case() -> dict:
     return {"borrower": {"name": "", "constitution": "Private limited company", "industry": "", "msme_class": "Not registered",
                          "years_in_business": 0, "existing_exposure": 0.0},
-            "facilities": [], "securities": [], "repay": {}, "client": {}, "report": {}, "thresholds": {},
-            "dscr": {"growth_pct": 5.0, "tax_pct": 25.0, "wc_utilisation_pct": 80.0}}
+            "borrower_profile": new_profile(), "security_opted": "later",
+            "facilities": [], "equity": [], "securities": [], "repay": {}, "kyc_status": {}, "client": {}, "report": {},
+            "thresholds": {}, "dscr": {"growth_pct": 5.0, "tax_pct": 25.0, "wc_utilisation_pct": 80.0}}
+
+
+ROLES = ["Borrower", "Promoter", "Director", "Partner", "Proprietor", "Guarantor", "Co-applicant"]
+BUREAUS = ["CIBIL", "Experian", "Equifax", "CRIF High Mark", "Other"]
+YN = ["Y", "N"]
+# step 1 tables: column -> kind ("text", "num", or a list of allowed values)
+PROFILE_TABLES = {
+    "scores": {"name": "text", "role": ROLES, "score": "num", "bureau": BUREAUS, "report_date": "text"},
+    "income": {"source": bw.INCOME_SOURCES, "description": "text", "amount": "num", "frequency": list(bw.FREQUENCIES),
+               "stability": bw.STABILITY, "proof": YN},
+    "assets": {"type": bw.ASSET_TYPES, "description": "text", "value": "num", "basis": bw.BASIS},
+    "liabilities": {"type": bw.LIABILITY_TYPES, "description": "text", "value": "num", "basis": bw.BASIS},
+    "history": {"lender": "text", "type": "text", "sanctioned": "num", "year": "num", "status": bw.HISTORY_STATUS,
+                "max_dpd": "num", "default": YN},
+    "obligations": {"lender": "text", "facility_type": "text", "outstanding": "num", "emi": "num", "rate": "num",
+                    "tenure_left": "num", "secured": ["Secured", "Unsecured"], "kind": bw.OBLIGATION_KINDS,
+                    "close_with_new": YN},
+}
+EQUITY_FIELDS = {"instrument": loans.EQUITY_INSTRUMENTS, "amount": "num", "investor": "text",
+                 "valuation_basis": loans.VALUATION_BASIS, "pre_money": "num", "dilution_pct": "num", "use_of_funds": "text"}
 
 
 # ---------------------------------------------------------------- input checks
@@ -103,6 +136,13 @@ def clean_case(raw) -> dict:
         "years_in_business": num(b.get("years_in_business"), 0, 200, 0, whole=True),
         "existing_exposure": num(b.get("existing_exposure"), 0, MONEY_MAX),
     }
+    case["borrower_profile"] = clean_profile(raw.get("borrower_profile"), raw.get("client"))
+    opted = raw.get("security_opted")
+    case["security_opted"] = opted if opted in sec.OPTED else ("yes" if raw.get("securities") else "later")
+    case["equity"] = [{"id": ident(r.get("id")), **clean_row(r, EQUITY_FIELDS)} for r in raw.get("equity") or []
+                      if isinstance(r, dict)]
+    ks = raw.get("kyc_status") if isinstance(raw.get("kyc_status"), dict) else {}
+    case["kyc_status"] = {k: v for k, v in ks.items() if k in kyc.ALL_KINDS and v in kyc.STATUSES}
     known = {p for _, _, p in loans.all_products()}
     for f in raw.get("facilities") or []:
         if not isinstance(f, dict) or f.get("product") not in known:
@@ -125,6 +165,12 @@ def clean_case(raw) -> dict:
                 out[k] = num(v, 0, MONEY_MAX) if isinstance(v, (int, float)) else text(v)
         if out.get("tenor_months") is not None and out.get("moratorium_months"):
             out["moratorium_months"] = min(out["moratorium_months"], max(out["tenor_months"] - 1, 0))
+        p = loans.product(f["product"])
+        out["secured"] = f["secured"] if isinstance(f.get("secured"), bool) else p["secured"]  # level 3, old files: default
+        if p["category"] == "Non-fund based":
+            out.setdefault("ccf_pct", p["ccf"] if p["ccf"] is not None else 100.0)
+            out.setdefault("limit_utilised", 0.0)
+            out["ccf_pct"] = num(out["ccf_pct"], 0, 100, 100.0)
         case["facilities"].append(out)
     for s in raw.get("securities") or []:
         if not isinstance(s, dict) or s.get("kind") not in sec.SECURITY_TYPES:
@@ -161,6 +207,49 @@ def clean_case(raw) -> dict:
     defaults = kpis.THRESHOLDS
     case["thresholds"] = {k: v for k, v in kpis.thresholds(th).items() if v != defaults[k]}  # only the changed ones
     return case
+
+
+def clean_row(r: dict, spec: dict) -> dict:
+    """One table row: numbers as numbers (blank stays None - never guessed), choices from the allowed list."""
+    out = {}
+    for col, kind in spec.items():
+        v = r.get(col)
+        if kind == "num":
+            out[col] = num(v, 0, MONEY_MAX, None)
+        elif isinstance(kind, list):
+            out[col] = v if v in kind else None
+        else:
+            out[col] = text(v, 300)
+    return out
+
+
+def clean_profile(raw, client=None) -> dict:
+    """Step 1 data, with the defaults an old case file needs. Old files kept loan obligations in the client details;
+    they move here the first time the case is opened."""
+    p = raw if isinstance(raw, dict) else {}
+    out = new_profile()
+    out["no_score"] = bool(p.get("no_score"))
+    for name, spec in PROFILE_TABLES.items():
+        rows = [clean_row(r, spec) for r in (p.get(name) or []) if isinstance(r, dict)]
+        out[name] = [r for r in rows if any(v not in (None, "") for v in r.values())] if name != "scores" else \
+            [r for r in rows if any(v not in (None, "") for v in r.values())]
+    for r in out["scores"]:
+        if r["score"] is not None and not 300 <= r["score"] <= 900:
+            r["score"] = None
+    out["rate_pct"] = num(p.get("rate_pct"), 0, 50, 11.0)
+    out["tenure_months"] = num(p.get("tenure_months"), 1, 480, 60, whole=True)
+    old = (client or {}).get("obligations") if isinstance(client, dict) else None
+    if not out["obligations"] and isinstance(old, list):
+        for o in old:
+            if not isinstance(o, dict):
+                continue
+            row = clean_row({"lender": o.get("Lender"), "facility_type": o.get("Product"), "outstanding": o.get("Outstanding ₹"),
+                             "emi": o.get("EMI ₹"), "rate": o.get("ROI %"), "tenure_left": o.get("Months left"),
+                             "secured": o.get("Security"), "kind": "Fund based",
+                             "close_with_new": o.get("Close with new loan")}, PROFILE_TABLES["obligations"])
+            if row["lender"] or row["outstanding"] or row["emi"]:
+                out["obligations"].append(row)
+    return out
 
 
 # ---------------------------------------------------------------- formatting
@@ -356,9 +445,15 @@ class Workspace:
                   "data": d.data} for d in self.stores["kyc_docs"].values()]
         return docs
 
+    def kyc_rows(self) -> list:
+        have = {}
+        for d in self.kyc_docs():
+            have.setdefault(d["doc_type"], []).append(d["doc_id"])
+        return kyc.checklist(self.case["borrower"]["constitution"], have, self.case.get("kyc_status"))
+
     def kyc_missing(self) -> list:
-        have = {d["doc_type"] for d in self.kyc_docs()}
-        return [kyc.ENTITY_DOCS[k] for k in kyc.REQUIRED[kyc.family(self.case["borrower"]["constitution"])] if k not in have]
+        """Documents not provided and not marked 'not applicable' - shown as information, never as an error."""
+        return kyc.still_missing(self.kyc_rows())
 
     def kyc_index(self) -> pd.DataFrame:
         return pd.DataFrame([{"ID": d["doc_id"], "Document": kyc.ALL_KINDS.get(d["doc_type"], d["doc_type"]),
@@ -467,10 +562,28 @@ class Workspace:
                                sec.cover(self.case["securities"], t["net_exposure"]), self.wc_interest, self.th)
 
     def totals(self) -> dict:
+        """Debt totals by class, the non-fund limits' fund-based equivalent, and equity kept apart (equity adds to net
+        worth, never to exposure)."""
         f = self.case["facilities"]
         fund = sum(x.get("amount") or 0 for x in f if loans.is_fund(x))
         nonfund = sum(x.get("amount") or 0 for x in f if not loans.is_fund(x))
-        return {"fund": fund, "nonfund": nonfund, "total": fund + nonfund, "net_exposure": sum(loans.exposure(x) for x in f)}
+        fe = sum(loans.nfb_limit(x)["fund_equivalent"] for x in f if not loans.is_fund(x))
+        return {"fund": fund, "nonfund": nonfund, "total": fund + nonfund, "net_exposure": sum(loans.exposure(x) for x in f),
+                "nfb_fund_equivalent": fe, "credit_equivalent": fund + fe,
+                "secured": sum(x.get("amount") or 0 for x in f if loans.is_secured(x)),
+                "unsecured": sum(x.get("amount") or 0 for x in f if not loans.is_secured(x)),
+                "equity": loans.equity_summary(self.case.get("equity"))["total"]}
+
+    def potential(self) -> dict:
+        """Step 1: repayment potential from the borrower profile."""
+        return bw.assess(self.case.get("borrower_profile") or {}, self.th)
+
+    def new_monthly_emi(self) -> float:
+        """Monthly outgo of the proposal at its peak year: new term-loan instalments plus interest on new CC / OD."""
+        sch = list(self.schedules().values())
+        yearly = [rp.yearly(s)["instalment"] for s in sch]
+        peak = max((sum(y.get(k, 0) for y in yearly) for k in set().union(*[set(y.index) for y in yearly])), default=0) if yearly else 0
+        return (peak + self.wc_interest()) / 12
 
     # ------------------------------------------------ summary
 
@@ -490,13 +603,14 @@ class Workspace:
         def add(sev, area, finding, step, next_step):
             flags.append({"severity": sev, "area": area, "finding": finding, "evidence": step, "next_step": next_step})
 
-        if not case["facilities"]:
-            add("High", "Proposal", "No facilities entered", "Step 1", "Add the facilities requested")
+        if not case["facilities"] and not case.get("equity"):
+            add("High", "Proposal", "No facilities entered", "Step 3", "Add the debt facilities or equity requested")
         fac_rows = []
         for f in case["facilities"]:
             p, a = loans.product(f["product"]), ass[f["id"]]
             method = self.repay_cfg(f)["method"] if p["repay"] in ("amortising", "bullet") else p["repay"].replace("_", "-").capitalize()
-            fac_rows.append({"Facility": f["product"], "Category": p["category"], "Amount (₹)": f.get("amount"),
+            fac_rows.append({"Facility": f["product"], "Category": p["category"],
+                             "Class": loans.classification(f)["label"], "Amount (₹)": f.get("amount"),
                              "Tenor (months)": f.get("tenor_months"), "Rate %": f.get("rate_pct"),
                              "Cash margin %": f.get("cash_margin_pct"), "Repayment": method,
                              "Assessment": a["method"], "Eligible (₹)": a["eligible"],
@@ -504,20 +618,35 @@ class Workspace:
                              "Purpose": f.get("purpose")})
             if a["ok"] is False:
                 add("High", "Eligibility", f"{f['product']}: requested {inr(f.get('amount'))} exceeds assessed {inr(a['eligible'])}",
-                    "Step 5", "Reduce the limit or justify the excess")
+                    "Step 6", "Reduce the limit or justify the excess")
+        opted = case.get("security_opted", "later")
         for s, finding, n in sec.security_flags(case["securities"], t["net_exposure"], b["msme_class"], t["fund"],
-                                                t["total"] - t["net_exposure"]):
+                                                t["total"] - t["net_exposure"], opted):
             add(s, "Security", finding, "Step 2", n)
+        for s, finding, n in sec.requirement_flags(case["securities"], [{"product": f["product"], "secured": loans.is_secured(f)}
+                                                                         for f in case["facilities"]], opted):
+            add(s, "Security", finding, "Steps 2-3", n)
         for label in self.kyc_missing():
-            add("Low", "KYC documents", f"Not attached: {label}", "Step 3", "Collect from the client for the credit file")
+            add("Low", "KYC documents", f"Still missing (information only): {label}", "Step 4",
+                "Collect it, or mark it 'not available' / 'not applicable' in step 4")
+        pot = self.potential()
+        for fl in pot["flags"]:
+            add(fl["severity"], fl["area"], fl["finding"], fl["evidence"], fl["next_step"])
+        vs = None
+        if case["facilities"] and pot["monthly_income"]:
+            vs = bw.with_proposal(pot, self.new_monthly_emi(), self.th)
+            if vs["within_headroom"] is False:
+                add("Medium", "Repayment potential", f"The proposal's monthly outgo ({inr(vs['new_emi'])}) is above the room for a "
+                    f"new EMI in step 1 ({inr(pot['max_emi'])})", "Steps 1 and 6", "Reduce the amount, lengthen the tenor or add income")
         if res is not None:
             for _, r in res["flags"].iterrows():
                 add(r["severity"], r["area"], r["finding"], r["evidence"], r["next_step"])
         else:
-            add("High", "Financials", "No financial documents read", "Step 4", "Upload and read the financials")
+            add("Medium", "Financials", "No financial documents read - DSCR, ratios and turnover-based eligibility are not "
+                "assessed", "Step 5", "Upload and read the financials if they are available")
         if cap is not None and cap["verdict"]["status"] != "good":
             add("High" if cap["verdict"]["status"] == "critical" else "Medium", "Repayment capacity",
-                f"Repayment capacity: {cap['verdict']['label']} — {cap['verdict']['meaning']}", "Step 5",
+                f"Repayment capacity: {cap['verdict']['label']} — {cap['verdict']['meaning']}", "Step 6",
                 "Restructure (tenor, moratorium, amount) or get additional security / guarantees")
         th = self.th
         mn, avg = rp.dscr_range(dt)
@@ -525,22 +654,53 @@ class Workspace:
             if mn < th["dscr_min"]:
                 year = int(dt.loc[pd.to_numeric(dt["dscr"], errors="coerce").idxmin(), "year"])
                 add("High", "Repayment", f"Minimum DSCR on the proposal {mn:.2f}x (year {year})",
-                    "Step 5", "Lengthen tenor, add moratorium, change repayment method or reduce the amount")
+                    "Step 6", "Lengthen tenor, add moratorium, change repayment method or reduce the amount")
             elif avg < th["dscr_avg_min"]:
-                add("Medium", "Repayment", f"Average DSCR on the proposal {avg:.2f}x", "Step 5", "Review repayment structure")
+                add("Medium", "Repayment", f"Average DSCR on the proposal {avg:.2f}x", "Step 6", "Review repayment structure")
         flags = sorted(flags, key=lambda f: SEV_ORDER[f["severity"]])
-        n_kyc, n_missing = len(self.kyc_docs()), len(self.kyc_missing())
-        fin_cov = coverage(self.fin_docs())
-        steps = [
-            ("Loan request", "good" if case["facilities"] and b["name"] else "critical"),
-            ("Security", "good" if case["securities"] else "critical"),
-            ("KYC", "good" if n_kyc and not n_missing else "warning" if n_kyc else "critical"),
-            ("Financials", "good" if res is not None and not fin_cov["Status"].str.startswith("❌").any()
-             else "warning" if res is not None else "critical"),
-            ("Repayment", cap["verdict"]["status"] if cap is not None else "warning" if case["facilities"] else "critical"),
-        ]
         return {"case": case, "res": res, "fin": fin, "totals": t, "cover": cov, "dscr": dt, "flags": pd.DataFrame(flags),
-                "facilities": pd.DataFrame(fac_rows), "steps": steps, "capacity": cap, "assessments": ass, "thresholds": th}
+                "facilities": pd.DataFrame(fac_rows), "steps": self.readiness(res, cap, pot), "capacity": cap,
+                "assessments": ass, "thresholds": th, "potential": pot, "proposal_vs_potential": vs,
+                "equity": loans.equity_summary(case.get("equity")),
+                "nfb": [{"product": f["product"], **loans.nfb_limit(f)} for f in case["facilities"] if not loans.is_fund(f)],
+                "kyc_rows": self.kyc_rows(), "security_opted": case.get("security_opted", "later")}
+
+    def readiness(self, res, cap, pot) -> list:
+        """Per step: Complete / Partial / Skipped (optional) / Not started. Every step can be done in any order."""
+        case, b = self.case, self.case["borrower"]
+        p = case.get("borrower_profile") or {}
+
+        def state(name, st, note=""):
+            return {"name": name, "state": st, "status": STATES[st], "note": note}
+        parts = [bool(b["name"]), bool(pot["income"]["count"]), bool(pot["scores"]["count"] or p.get("no_score")),
+                 bool(pot["track"]["rows"] or p.get("no_score")), pot["net_worth"]["net_worth"] is not None]
+        s1 = "Complete" if all(parts[:3]) else "Partial" if any(parts) else "Not started"
+        opted = case.get("security_opted", "later")
+        if opted == "no":
+            s2 = state(STEPS[1], "Skipped (optional)", "Not applicable (unsecured)")
+        elif case["securities"]:
+            s2 = state(STEPS[1], "Complete" if all(s.get("value") or sec.SECURITY_TYPES[s["kind"]][0] == "Guarantee"
+                                                  for s in case["securities"]) else "Partial")
+        else:
+            s2 = state(STEPS[1], "Partial" if opted == "yes" else "Not started")
+        items = case["facilities"] + case.get("equity", [])
+        s3 = "Complete" if items and all(x.get("amount") for x in items) else "Partial" if items else "Not started"
+        rows = self.kyc_rows()
+        done = sum(r["resolved"] for r in rows)
+        s4 = "Complete" if rows and done == len(rows) else "Partial" if done or self.kyc_docs() else "Not started"
+        fin_docs = self.fin_docs()
+        cov = coverage(fin_docs)
+        if res is not None and not cov["Status"].str.startswith("❌").any():
+            s5 = "Complete"
+        elif res is not None or fin_docs:
+            s5 = "Partial"
+        else:
+            s5 = "Not started"
+        debt = bool(case["facilities"])
+        s6 = "Skipped (optional)" if not debt else "Complete" if cap is not None else "Partial"
+        return [state(STEPS[0], s1), s2, state(STEPS[2], s3), state(STEPS[3], s4, f"{done} of {len(rows)} resolved"),
+                state(STEPS[4], s5, "" if fin_docs else "Optional - analysis uses whatever is provided"),
+                state(STEPS[5], s6, "No debt requested" if not debt else "")]
 
     # ------------------------------------------------ save / open
 
@@ -551,7 +711,7 @@ class Workspace:
             if isinstance(o, set):
                 return list(o)
             return str(o)
-        payload = {"version": 1, "saved": datetime.now().isoformat(timespec="seconds"), "case": self.case,
+        payload = {"version": CASE_VERSION, "saved": datetime.now().isoformat(timespec="seconds"), "case": self.case,
                    "financial_docs": self.fin_docs(),
                    "kyc_docs": [{k: v for k, v in d.items() if k != "data"} for d in self.kyc_docs()],
                    "security_docs": self.as_dicts("sec_docs", self.static_sec)}
@@ -631,8 +791,25 @@ class Workspace:
 
     def excel(self, s: dict) -> bytes:
         case, b, t, cov, dt, cap = s["case"], s["case"]["borrower"], s["totals"], s["cover"], s["dscr"], s["capacity"]
+        pot = s["potential"]
         extra = {
+            "Repayment potential": pd.DataFrame([
+                ("Verdict", pot["verdict"]["label"]), ("Eligible monthly income (₹)", pot["monthly_income"]),
+                ("Existing monthly obligations (₹)", pot["obligations"]["monthly"]), ("FOIR (existing)", pot["foir"]),
+                ("Room for a new EMI (₹ a month)", pot["max_emi"]),
+                (f"Indicative max loan (₹) at {pot['rate_pct']:g}% / {pot['tenure_months']} months", pot["max_loan"]),
+                ("Net worth (₹)", pot["net_worth"]["net_worth"]), ("Weakest bureau band", pot["scores"]["worst"]),
+                ("Repayment track record", pot["track"]["rating"]), ("Not provided", ", ".join(pot["missing"]) or "—")]
+                + [("Observation", o) for o in pot["observations"]], columns=["Item", "Value"]),
+            "Credit scores": pd.DataFrame(pot["scores"]["rows"]),
+            "Income sources": pd.DataFrame(pot["income"]["rows"]),
+            "Net worth": pd.DataFrame([{"side": "Asset", **r} for r in pot["net_worth"]["assets"]]
+                                      + [{"side": "Liability", **r} for r in pot["net_worth"]["liabilities"]]),
+            "Repayment history": pd.DataFrame(pot["track"]["rows"]),
+            "Existing liabilities": pd.DataFrame(pot["obligations"]["rows"]),
             "Proposal": s["facilities"],
+            "Non-fund limits": pd.DataFrame(s["nfb"]),
+            "Equity": pd.DataFrame(s["equity"]["rows"]),
             "Security": pd.DataFrame([{**{k: v for k, v in x.items() if k != "id"}, "realisable": sec.realisable(x)}
                                       for x in case["securities"]]),
             "Repayment capacity": capacity.report_rows(cap) if cap is not None else pd.DataFrame(),
@@ -640,9 +817,12 @@ class Workspace:
             "Repayment DSCR": dt if dt is not None else pd.DataFrame(),
         }
         rows = [("Borrower", b["name"]), ("Constitution", b["constitution"]), ("Industry", b["industry"]),
-                ("MSME", b["msme_class"]), ("Total proposed (₹)", t["total"]), ("Fund based (₹)", t["fund"]),
-                ("Non-fund based (₹)", t["nonfund"]), ("Security cover (x)", cov["cover"]),
-                ("Min DSCR on proposal (x)", None if dt is None or dt.empty else float(dt["dscr"].min())),
+                ("MSME", b["msme_class"]), ("Total debt proposed (₹)", t["total"]), ("Fund based (₹)", t["fund"]),
+                ("Non-fund based limits (₹)", t["nonfund"]), ("Non-fund fund-based equivalent (₹)", t["nfb_fund_equivalent"]),
+                ("Equity requested (₹)", t["equity"]), ("Repayment potential", pot["verdict"]["label"]),
+                ("Security", sec.OPTED.get(s["security_opted"], "")),
+                ("Security cover (x)", "n/a - unsecured" if s["security_opted"] == "no" else cov["cover"]),
+                ("Min DSCR on proposal (x)", rp.dscr_range(dt)[0]),
                 ("Repayment capacity", cap["verdict"]["label"] if cap is not None else "Not assessed")]
         empty = {"tables": {"financials": pd.DataFrame(), "bank": pd.DataFrame(), "gst": pd.DataFrame(), "itr": pd.DataFrame()},
                  "fin_kpis": pd.DataFrame(), "bank_kpis": pd.DataFrame(), "gst_kpis": pd.DataFrame(),

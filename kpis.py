@@ -22,6 +22,13 @@ THRESHOLDS = {  # defaults - read-only; a case's own benchmarks come from thresh
     "current_ratio_floor": 1.17,
     "dscr_min": 1.25,                  # any single year
     "foir_max": 0.55,                 # fixed obligations / income, typical 50-60%
+    "foir_strong": 0.40,              # step 1: at or below this, obligations are light
+    "foir_weak": 0.70,                # step 1: above this, little room for new debt
+    "bureau_strong": 750,             # CIBIL-style score bands (300-900)
+    "bureau_good": 700,
+    "bureau_fair": 650,
+    "dpd_watch": 30,                  # days past due in the repayment record that count as delays
+    "dpd_adverse": 90,                # ... and as a serious delay (NPA-level)
     "dscr_avg_min": 1.50,              # average over the years
     "interest_coverage_min": 2.0,
     "debt_equity_max": 3.0,            # term-loan D/E norm (2:1 for many lenders)

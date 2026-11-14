@@ -36,9 +36,10 @@ def test_demo_runs_every_section(client):
     assert s["case"]["borrower"]["name"] == "Demo Polymers Pvt Ltd" and s["unit"] == "₹ Lakh"
     assert s["fin"]["analysis"]["tiles"] and s["fin"]["review"]["financials"]["years"]
     assert s["repay"]["capacity"]["verdict"]["label"] == "Comfortable"
-    assert len(s["repay"]["structure"]) == 4 and s["repay"]["dscr"]["tiles"]
-    assert s["security"]["tiles"][3]["value"] == "1.39x"  # the cash-margin FD is already netted from exposure
-    assert [x["name"] for x in s["summary"]["steps"]][0] == "Loan request"
+    assert len(s["repay"]["structure"]) == 5 and s["repay"]["dscr"]["tiles"]
+    assert s["security"]["tiles"][3]["value"] == "1.33x"  # cash-margin FD netted from exposure; unsecured loan adds exposure
+    assert [x["name"] for x in s["summary"]["steps"]][0] == "Borrower & repayment potential"
+    assert s["borrower"]["verdict"]["label"] == "Adequate" and s["product"]["nfb"]
     json.dumps(s)  # all JSON-safe
 
 

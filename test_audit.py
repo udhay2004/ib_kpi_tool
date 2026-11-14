@@ -199,7 +199,7 @@ def test_clean_case_survives_bad_input():
     raw["dscr"] = {"tax_pct": None, "growth_pct": "x"}
     c = clean_case(raw)
     f = c["facilities"][1]
-    assert f["tenor_months"] == 0 and f["amount"] == 0 and f["rate_pct"] == 100 and len(c["facilities"]) == 4
+    assert f["tenor_months"] == 0 and f["amount"] == 0 and f["rate_pct"] == 100 and len(c["facilities"]) == 5
     s = c["securities"][0]
     assert s["value"] == 0 and s["margin_pct"] == 0 and s["valuation_date"] is None and s["id"] == "xonclickalert1"
     assert c["dscr"] == {"growth_pct": 5.0, "tax_pct": 25.0, "wc_utilisation_pct": 80.0}

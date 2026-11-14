@@ -1,4 +1,11 @@
-"""Credit facility catalogue (fund-based and non-fund-based) and limit-assessment methods.
+"""Financial solutions catalogue and limit-assessment methods.
+
+Taxonomy (three levels, a first-class field on every facility):
+  1. Type of solution: EQUITY (equity raise / investor funding / promoter infusion) or DEBT.
+  2. Debt: FUND BASED (money is lent) or NON-FUND BASED (a limit is sanctioned; no cash moves unless invoked).
+  3. Debt: SECURED or UNSECURED - each product has a default the analyst can override; it links to step 2.
+Non-fund limits carry a utilisation, a cash margin and a credit conversion factor (CCF) that turns the limit into a
+fund-based equivalent exposure.
 
 Assessment methods follow common Indian bank practice:
 - Working capital: Nayak committee turnover method (limits up to Rs 5 Cr for MSEs) and
@@ -34,7 +41,14 @@ F = {
     "beneficiary": ("beneficiary", "Beneficiary", "text", "", None),
     "lc_kind": ("lc_kind", "LC type", "choice:Inland sight|Inland usance|Import sight|Import usance", "Inland sight", None),
     "bond_size": ("bond_size", "Bond issue size (₹)", "money", 0.0, None),
+    "purchase_bills": ("annual_purchase_bills", "Annual purchases eligible for discounting (₹)", "money", 0.0, None),
+    "credit_days": ("supplier_credit_days", "Supplier credit period (days)", "days", 60, None),
+    "utilised": ("limit_utilised", "Currently utilised (₹)", "money", 0.0, "Part of the limit already in use"),
+    "ccf": ("ccf_pct", "Credit conversion factor (%)", "pct", 100.0,
+            "Share of the limit (net of cash margin) counted as fund-based exposure; RBI standardised factors by default"),
 }
+
+NFB = ["utilised", "ccf"]  # extra fields on every non-fund limit
 
 COMMON = ["amount", "rate", "purpose"]
 
@@ -60,6 +74,9 @@ CATALOGUE = {
             "Post-shipment credit (EBD / FBP)": {"fields": COMMON + ["export_turnover", "collection_days"], "method": "bills",
                                                  "repay": "self_liquidating", "security": "Export bills",
                                                  "tenor": "Up to usance + transit period"},
+            "Purchase invoice discounting (PID)": {"fields": COMMON + ["purchase_bills", "credit_days"], "method": "pid",
+                                                   "repay": "self_liquidating", "security": "Goods purchased / receivables",
+                                                   "tenor": "Up to 90-120 days per invoice"},
         },
         "Term loans": {
             "Term loan – capex / expansion": {"fields": COMMON + ["tenor", "moratorium", "project_cost"], "method": "term",
@@ -95,42 +112,42 @@ CATALOGUE = {
     },
     "Non-fund based": {
         "Bank guarantees": {
-            "Financial guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"],
+            "Financial guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"] + NFB,
                                     "method": "bg", "repay": "contingent", "security": "Cash margin + counter-indemnity",
                                     "tenor": "As per underlying obligation"},
-            "Performance guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"],
+            "Performance guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"] + NFB,
                                       "method": "bg", "repay": "contingent", "security": "Cash margin + counter-indemnity",
                                       "tenor": "Contract period + claim period"},
-            "Bid bond / EMD guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"],
+            "Bid bond / EMD guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"] + NFB,
                                          "method": "bg", "repay": "contingent", "security": "Cash margin",
                                          "tenor": "Tender validity"},
-            "Advance payment guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"],
+            "Advance payment guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"] + NFB,
                                           "method": "bg", "repay": "contingent", "security": "Cash margin",
                                           "tenor": "Until advance is adjusted"},
-            "Retention money guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"],
+            "Retention money guarantee": {"fields": COMMON + ["tenor", "beneficiary", "contract_value", "bg_pct", "cash_margin"] + NFB,
                                           "method": "bg", "repay": "contingent", "security": "Cash margin",
                                           "tenor": "Defect liability period"},
-            "Customs / statutory guarantee": {"fields": COMMON + ["tenor", "beneficiary", "cash_margin"], "method": "bg_simple",
+            "Customs / statutory guarantee": {"fields": COMMON + ["tenor", "beneficiary", "cash_margin"] + NFB, "method": "bg_simple",
                                               "repay": "contingent", "security": "Cash margin", "tenor": "As required"},
-            "Deferred payment guarantee (DPG)": {"fields": COMMON + ["tenor", "beneficiary", "project_cost", "cash_margin"],
+            "Deferred payment guarantee (DPG)": {"fields": COMMON + ["tenor", "beneficiary", "project_cost", "cash_margin"] + NFB,
                                                  "method": "term", "repay": "amortising", "security": "Asset purchased",
                                                  "tenor": "Instalment period"},
-            "Standby letter of credit (SBLC)": {"fields": COMMON + ["tenor", "beneficiary", "cash_margin"], "method": "bg_simple",
+            "Standby letter of credit (SBLC)": {"fields": COMMON + ["tenor", "beneficiary", "cash_margin"] + NFB, "method": "bg_simple",
                                                 "repay": "contingent", "security": "Cash margin + collateral",
                                                 "tenor": "Up to 12 months typically"},
         },
         "Letters of credit": {
-            "Letter of credit": {"fields": COMMON + ["lc_kind", "annual_purchases", "lead_days", "usance_days", "cash_margin"],
+            "Letter of credit": {"fields": COMMON + ["lc_kind", "annual_purchases", "lead_days", "usance_days", "cash_margin"] + NFB,
                                  "method": "lc", "repay": "contingent", "security": "Goods (documents of title) + margin",
                                  "tenor": "Sight or usance up to 180 days"},
-            "Co-acceptance of bills": {"fields": COMMON + ["annual_purchases", "usance_days", "cash_margin"], "method": "lc",
+            "Co-acceptance of bills": {"fields": COMMON + ["annual_purchases", "usance_days", "cash_margin"] + NFB, "method": "lc",
                                        "repay": "contingent", "security": "Goods + margin", "tenor": "Bill usance"},
         },
         "Other non-fund": {
-            "Partial credit enhancement (PCE)": {"fields": COMMON + ["tenor", "bond_size"], "method": "pce",
+            "Partial credit enhancement (PCE)": {"fields": COMMON + ["tenor", "bond_size"] + NFB, "method": "pce",
                                                  "repay": "contingent", "security": "As agreed",
                                                  "tenor": "Bond tenor"},
-            "Derivative / forward contract limit (CEL)": {"fields": COMMON + ["tenor"], "method": "none",
+            "Derivative / forward contract limit (CEL)": {"fields": COMMON + ["tenor"] + NFB, "method": "none",
                                                           "repay": "contingent", "security": "Margin as per exposure",
                                                           "tenor": "Contract tenor"},
         },
@@ -138,12 +155,82 @@ CATALOGUE = {
 }
 
 
+# Products that are usually unsecured (level 3 default); everything else defaults to secured.
+UNSECURED_BY_DEFAULT = {"Unsecured business loan", "Partial credit enhancement (PCE)", "Derivative / forward contract limit (CEL)"}
+TRADE_FINANCE = {"Bill / invoice discounting", "Supply chain / channel finance", "Packing credit / PCFC (pre-shipment)",
+                 "Post-shipment credit (EBD / FBP)", "Purchase invoice discounting (PID)", "Letter of credit",
+                 "Co-acceptance of bills", "Standby letter of credit (SBLC)"}
+# Credit conversion factors (RBI standardised approach): direct credit substitutes 100%, transaction-related
+# (performance-type) guarantees 50%, short-term self-liquidating trade LCs 20%. Editable per facility.
+CCF = {"Financial guarantee": 100.0, "Performance guarantee": 50.0, "Bid bond / EMD guarantee": 50.0,
+       "Advance payment guarantee": 50.0, "Retention money guarantee": 50.0, "Customs / statutory guarantee": 50.0,
+       "Deferred payment guarantee (DPG)": 100.0, "Standby letter of credit (SBLC)": 100.0, "Letter of credit": 20.0,
+       "Co-acceptance of bills": 100.0, "Partial credit enhancement (PCE)": 100.0,
+       "Derivative / forward contract limit (CEL)": 100.0}
+
+EQUITY_INSTRUMENTS = ["Equity shares", "CCPS (compulsorily convertible preference shares)",
+                      "CCD (compulsorily convertible debentures)", "Preference shares", "Promoter infusion"]
+VALUATION_BASIS = ["Pre-money valuation", "Book value", "DCF / independent valuation", "Not decided"]
+
+
 def product(name: str) -> dict:
     for cat, groups in CATALOGUE.items():
         for grp, prods in groups.items():
             if name in prods:
-                return {**prods[name], "category": cat, "group": grp, "name": name}
+                return {**prods[name], "category": cat, "group": grp, "name": name, "solution": "Debt",
+                        "secured": name not in UNSECURED_BY_DEFAULT, "trade_finance": name in TRADE_FINANCE,
+                        "ccf": CCF.get(name)}
     raise KeyError(name)
+
+
+def is_secured(fac: dict) -> bool:
+    """Level 3: the analyst's choice on the facility, else the product's default."""
+    v = fac.get("secured")
+    return v if isinstance(v, bool) else product(fac["product"])["secured"]
+
+
+def classification(fac: dict) -> dict:
+    p = product(fac["product"])
+    sec = is_secured(fac)
+    return {"solution": "Debt", "basis": p["category"], "secured": sec,
+            "label": f"Debt · {p['category']} · {'Secured' if sec else 'Unsecured'}"}
+
+
+def taxonomy() -> dict:
+    """The picker tree: Equity, or Debt -> Fund / Non-fund -> Secured / Unsecured -> products (by default class)."""
+    debt = {cat: {"Secured": [], "Unsecured": []} for cat in CATALOGUE}
+    for cat, grp, name in all_products():
+        debt[cat]["Secured" if name not in UNSECURED_BY_DEFAULT else "Unsecured"].append(name)
+    return {"Equity": EQUITY_INSTRUMENTS, "Debt": debt}
+
+
+def nfb_limit(fac: dict) -> dict | None:
+    """A non-fund limit: utilisation, margin money and the fund-based equivalent exposure.
+    Fund-based equivalent = (limit - cash margin) x CCF. None for fund-based facilities."""
+    if is_fund(fac):
+        return None
+    limit = fac.get("amount") or 0
+    used = min(fac.get("limit_utilised") or 0, limit) if limit else (fac.get("limit_utilised") or 0)
+    margin_pct = fac.get("cash_margin_pct") or 0
+    ccf = fac.get("ccf_pct")
+    ccf = CCF.get(fac["product"], 100.0) if ccf is None else ccf
+    margin = limit * margin_pct / 100
+    return {"limit": limit, "utilised": used, "utilisation": used / limit if limit else None, "available": max(limit - used, 0),
+            "margin_pct": margin_pct, "margin_money": margin, "commission_pct": fac.get("rate_pct"),
+            "tenor_months": fac.get("tenor_months"), "ccf_pct": ccf, "fund_equivalent": (limit - margin) * ccf / 100}
+
+
+def equity_summary(rows: list) -> dict:
+    """Equity requested - kept apart from debt: it adds to net worth, not to exposure."""
+    out, total = [], 0.0
+    for r in rows or []:
+        amt = r.get("amount") or 0
+        pre = r.get("pre_money") or 0
+        dil = r.get("dilution_pct")
+        implied = amt / (pre + amt) * 100 if pre and amt else None
+        out.append({**r, "implied_dilution_pct": implied, "dilution_pct": dil if dil else implied})
+        total += amt
+    return {"rows": out, "total": total}
 
 
 def all_products():
@@ -163,7 +250,9 @@ def exposure(fac: dict) -> float:
 # ---------------------------------------------------------------- assessment
 
 PROPERTY_KINDS = {"Residential property", "Commercial property", "Industrial property / factory", "Open land"}
-FINANCIAL_KINDS = {"Fixed deposit", "Listed shares", "Mutual fund units", "Life insurance policy (surrender value)", "Gold"}
+FINANCIAL_KINDS = {"Fixed deposit", "Listed shares", "Mutual fund units", "Life insurance policy (surrender value)", "Gold",
+                   "Government securities (G-Secs / T-bills)", "Sovereign Gold Bonds (SGB)", "NSC / KVP / post office deposits",
+                   "Bonds / debentures (listed)"}
 LAP_LTV = 0.60
 
 
@@ -193,6 +282,12 @@ def assess(fac: dict, fin: dict, securities=0.0) -> dict:
                 out.update(method="MPBF (2nd method)", eligible=max(mpbf, 0))
         if out["eligible"] is None:
             w.append("Needs projected turnover or the balance sheet (current assets / liabilities)")
+    elif m == "pid":
+        purch, days = fac.get("annual_purchase_bills") or 0, fac.get("supplier_credit_days") or 0
+        if purch:
+            e = purch / 365 * days * 0.80
+            w.append(f"Purchases ₹{purch:,.0f} ÷ 365 × {days} days credit × 80% (20% margin) = ₹{e:,.0f}")
+            out.update(method="Purchase cycle", eligible=e)
     elif m == "bills":
         sales, days = fac.get("annual_credit_sales") or 0, fac.get("collection_days") or 0
         if sales:
