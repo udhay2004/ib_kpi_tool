@@ -254,7 +254,14 @@ function renderFrame() {
   $("#hero").innerHTML = `<div class="hero"><div><span class="eyebrow"><i></i>Credit Appraisal Workbench${S.demo ? " · demo data" : ""}</span>
     <h1>${esc(b.name || "New credit case")}</h1><p>${esc(sub)}</p></div>
     <div class="chips">${chips.map(([k, v]) => `<div class="chip">${esc(k)}<b>${esc(v)}</b></div>`).join("")}</div></div>`;
-  $("#stepper").innerHTML = STEPS.map((s, i) => `<button class="step ${i === ui.step ? "on" : ""}" data-step="${i}"><span class="n">${i + 1}</span>${s}</button>`).join("");
+  // circles are shaded by each step's readiness (complete / partial); the label sits under its circle
+  const ready = S.summary.steps;
+  $("#stepper").innerHTML = STEPS.map((s, i) => {
+    const r = ready[i], cls = [i === ui.step ? "on" : "", r && r.state === "Complete" ? "done" : r && r.state === "Partial" ? "part" : ""].join(" ");
+    return `<button class="step ${cls}" data-step="${i}" title="${esc(s)}${r ? " · " + esc(r.state) : ""}" ${i === ui.step ? 'aria-current="step"' : ""}>
+      <span class="n">${i + 1}</span><span class="lbl">${esc(s)}</span></button>`;
+  }).join("");
+  $("#step-now").innerHTML = `Step ${ui.step + 1} of ${STEPS.length} · <b>${esc(STEPS[ui.step])}</b>`;
   $("#pager").innerHTML = (ui.step > 0 ? `<button class="btn" data-step="${ui.step - 1}">← ${STEPS[ui.step - 1]}</button>` : "<span></span>")
     + (ui.step < STEPS.length - 1 ? `<button class="btn primary" data-step="${ui.step + 1}">${STEPS[ui.step + 1]} →</button>` : "");
 }
