@@ -4,15 +4,12 @@
    HTML - text and attributes alike. */
 "use strict";
 
-const STEPS = ["Loan request", "Security", "KYC", "Financials", "Repayment", "Credit summary"];
+const STEPS = ["Borrower & potential", "Security", "Product", "KYC", "Financials", "Repayment", "Credit summary"];
 const FIN_ICONS = { financials: "📑", bank_statement: "🏦", gst: "🧾", itr: "👤", other: "📎" };
 const CLIENT_TABLES = {
   promoters: [["Name", "text"], ["Designation", "text"], ["PAN", "text"], ["Aadhaar last 4", "text"], ["Mobile", "text"], ["Email", "text"],
     ["DIN", "text"], ["Share %", "num"], ["Passport no", "text"], ["Age", "num"], ["Qualification", "text"], ["Experience yrs", "num"],
     ["Residence", "Owned|Rented"], ["CIBIL", "num"], ["CRIF / Experian", "text"]],
-  obligations: [["Lender", "text"], ["Product", "text"], ["Security", "Secured|Unsecured"], ["Loan amount ₹", "num"], ["EMI ₹", "num"],
-    ["Outstanding ₹", "num"], ["Term months", "num"], ["ROI %", "num"], ["EMI start", "text"], ["Months left", "num"],
-    ["Count in FOIR", "Y|N"], ["Close with new loan", "Y|N"]],
   customers: [["Name", "text"], ["% of sales", "num"], ["Credit days", "num"]],
   suppliers: [["Name", "text"], ["% of purchases", "num"], ["Credit days", "num"]],
   receivables: [["Particulars", "text"], ["Amount ₹", "num"]],
@@ -30,7 +27,8 @@ const CAM_FIELDS = [["repayment_source", "Primary repayment source"], ["proposed
 let S = null;          // state from the server
 let M = null;          // lists that never change (catalogue, security types...)
 const ui = { step: 0, unit: localGet("unit") || "₹ Crore", finTab: "docs", anaTab: "fin", repTab: "cap", upMode: "section",
-  newCat: "Fund based", newGrp: null, newProd: null, newSec: null, sev: ["High", "Medium"], kycPerson: "", open: {}, edits: null };
+  solution: "Debt", basis: "Fund based", secured: "Any", prodSearch: "", newProd: null, newSec: null, sev: ["High", "Medium"],
+  kycPerson: "", open: {}, edits: null };
 let charts = [];
 
 // ---------------------------------------------------------------- helpers
@@ -153,7 +151,8 @@ function fold(key, title, body, openByDefault) {
   return `<details class="fold" data-fold="${esc(key)}" ${open ? "open" : ""}><summary><span>${title}</span></summary><div class="body">${body}</div></details>`;
 }
 function uploader(store, opts) {
-  const tag = opts.required === undefined ? "" : opts.required ? `<span class="pill req">Required</span>` : `<span class="pill neutral">Optional</span>`;
+  // nothing is mandatory: "Recommended" items help the analysis, "Optional" ones are extra
+  const tag = opts.required === undefined ? "" : opts.required ? `<span class="pill req">Recommended</span>` : `<span class="pill neutral">Optional</span>`;
   const got = opts.count ? pill("good", `${opts.count} file${opts.count === 1 ? "" : "s"} added`) : "";
   return `<div class="card up"><div class="up-head"><div class="up-icon">${opts.icon}</div><div><div class="up-title">${esc(opts.title)} ${tag} ${got}</div>
     <div class="up-ask">${esc(opts.ask || "")}</div></div></div>${opts.extra || ""}
@@ -246,11 +245,12 @@ function renderSidebar() {
 function renderFrame() {
   const b = S.case.borrower, t = S.totals;
   const chips = [];
-  if (t.total) chips.push(["Proposed", t.text.total]);
-  if (S.case.facilities.length) chips.push(["Facilities", String(S.case.facilities.length)]);
+  chips.push(["Potential", S.borrower.verdict.label]);
+  if (t.total) chips.push(["Debt proposed", t.text.total]);
+  if (t.equity) chips.push(["Equity", t.text.equity]);
   chips.push(["Step", `${ui.step + 1} of ${STEPS.length}`]);
   const sub = b.name ? (b.industry ? `${b.constitution} · ${b.industry}` : b.constitution)
-    : "Loan request, security, KYC, financials and repayment, then the credit report for the bank.";
+    : "Repayment potential first, then security (optional), the product, KYC, financials and repayment.";
   $("#hero").innerHTML = `<div class="hero"><div><span class="eyebrow"><i></i>Credit Appraisal Workbench${S.demo ? " · demo data" : ""}</span>
     <h1>${esc(b.name || "New credit case")}</h1><p>${esc(sub)}</p></div>
     <div class="chips">${chips.map(([k, v]) => `<div class="chip">${esc(k)}<b>${esc(v)}</b></div>`).join("")}</div></div>`;
@@ -267,7 +267,7 @@ function render() {
   charts.forEach((c) => c.destroy()); charts = [];
   renderSidebar();
   renderFrame();
-  $("#view").innerHTML = [viewLoan, viewSecurity, viewKyc, viewFinancials, viewRepayment, viewSummary][ui.step]();
+  $("#view").innerHTML = [viewBorrower, viewSecurity, viewProduct, viewKyc, viewFinancials, viewRepayment, viewSummary][ui.step]();
   afterRender();
   if (fkey) {
     const sel = fkey[0] ? `[data-bind="${CSS.escape(fkey[0])}"]` : fkey[1] ? `[data-cell="${CSS.escape(fkey[1])}"]` : `[data-file="${CSS.escape(fkey[2])}"]`;
@@ -276,8 +276,79 @@ function render() {
   }
 }
 
-// ---------------------------------------------------------------- step 1: loan request
+// ---------------------------------------------------------------- step 1: borrower & repayment potential
 
+const COL_LABELS = { name: "Name", role: "Role", score: "Score (300-900)", bureau: "Bureau", report_date: "Report date", source: "Source",
+  description: "Description", amount: "Amount ₹", frequency: "Frequency", stability: "Stability", proof: "Proof?", type: "Type",
+  value: "Value ₹", basis: "Basis", lender: "Lender", sanctioned: "Sanctioned ₹", year: "Year", status: "Status", max_dpd: "Max DPD",
+  default: "Default?", facility_type: "Facility", outstanding: "Outstanding ₹", emi: "Monthly EMI / obligation ₹", rate: "Rate %",
+  tenure_left: "Months left", secured: "Secured?", kind: "Fund / non-fund", close_with_new: "Closed by new loan?" };
+
+// An editable table over rows in the case. path: e.g. "borrower_profile.income"; spec: {column: "text" | "num" | [choices]}.
+// extra(i) adds a read-only cell worked out by the server (annual amount, bureau band...).
+function rowsTable(path, spec, extra) {
+  const rows = getPath(S.case, path) || [];
+  const cols = Object.keys(spec);
+  const head = cols.map((c) => `<th>${esc(COL_LABELS[c] || c)}</th>`).join("") + (extra ? `<th>${esc(extra.label)}</th>` : "");
+  const body = rows.map((r, i) => `<tr>${cols.map((c) => {
+    const kind = spec[c], bind = `${path}.${i}.${c}`;
+    const cell = Array.isArray(kind) ? select(bind, r[c] ?? "", [["", "—"], ...kind]) : input(bind, r[c], kind === "num" ? "num" : "text");
+    return `<td style="min-width:${kind === "num" ? 120 : Array.isArray(kind) ? 130 : 150}px">${cell}</td>`;
+  }).join("")}${extra ? `<td class="small">${extra.cell(i)}</td>` : ""}<td><button class="x" data-del-row="${esc(path)}|${i}" aria-label="Remove row">✕</button></td></tr>`).join("");
+  return `<div class="tbl-wrap"><table class="tbl edit"><thead><tr>${head}<th></th></tr></thead><tbody>${body ||
+    `<tr><td colspan="${cols.length + 2}" class="muted">Nothing entered - optional.</td></tr>`}</tbody></table></div>
+    <button class="btn sm" data-add-row="${esc(path)}">＋ Add row</button>`;
+}
+
+function viewBorrower() {
+  const b = S.case.borrower, p = S.case.borrower_profile, B = S.borrower, T = M.profile_tables;
+  let h = section("Borrower", "Only the name and constitution are needed to start. The constitution sets the KYC checklist in step 4.");
+  h += `<div class="card"><div class="grid g-2-1-1">
+    ${field("Legal name of the borrower *", input("borrower.name", b.name, "text", 'placeholder="e.g. Acme Polymers Pvt Ltd"'))}
+    ${field("Constitution *", select("borrower.constitution", b.constitution, M.constitutions))}
+    ${field("MSME (Udyam)", select("borrower.msme_class", b.msme_class, M.msme))}
+    ${field("Industry / activity", input("borrower.industry", b.industry, "text", 'placeholder="e.g. Plastic packaging manufacturer"'))}
+    ${field("Existing bank exposure (₹, all lenders)", input("borrower.existing_exposure", b.existing_exposure, "num", 'min="0"') + (b.existing_exposure ? `<small>${inr(b.existing_exposure)}</small>` : ""))}
+    ${field("Years in business", input("borrower.years_in_business", b.years_in_business, "num", 'min="0" step="1"'))}</div></div>`;
+
+  // the panel first, so the answer is visible while the tables below are filled in
+  const v = B.verdict;
+  h += section("Repayment potential", "Worked out from everything below. Every table is optional; the verdict says what is missing.");
+  h += `<div class="card"><div class="hstack between"><div>${pill(v.status, v.label)} <span>${esc(v.meaning)}</span></div>
+    <div class="hstack">${field("Indicative rate % p.a.", input("borrower_profile.rate_pct", p.rate_pct, "num", 'min="0" max="50" style="width:110px"'))}
+    ${field("Tenure (months)", input("borrower_profile.tenure_months", p.tenure_months, "num", 'min="1" max="480" step="1" style="width:110px"'))}</div></div>
+    <div class="spacer"></div>${tiles(B.tiles)}
+    ${B.observations.length ? `<ul class="small" style="margin:12px 0 0">${B.observations.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>` : ""}
+    ${B.missing.length ? note("info", "Not provided yet: " + esc(B.missing.join(", ")) + ". The panel uses what is there.") : ""}</div>`;
+  if (B.flags.length) h += flags(B.flags);
+
+  h += section("1. Credit scores", "Borrower, promoters and guarantors. Bands: " + `${S.thresholds.bureau_strong}+ strong, ${S.thresholds.bureau_good}+ good, ${S.thresholds.bureau_fair}+ fair, below weak (change in the sidebar).`);
+  h += `<label class="check" style="margin-bottom:10px"><input type="checkbox" data-bind="borrower_profile.no_score" ${p.no_score ? "checked" : ""}> No score / new to credit</label>`;
+  h += rowsTable("borrower_profile.scores", T.scores, { label: "Band", cell: (i) => B.scores[i] ? pill(B.scores[i].status, B.scores[i].band) : "" });
+  h += section("2. Income and income sources", "Annual or monthly. One-off receipts are left out of the income used for FOIR."
+    + (B.from_financials ? ` From the financials: ${esc(B.from_financials)}.` : ""));
+  h += rowsTable("borrower_profile.income", T.income, { label: "A year", cell: (i) => esc(B.income.annual[i] || "") });
+  h += `<p class="muted">Total ${esc(B.income.total)} a year · stable ${esc(B.income.stable)} · used for FOIR ${esc(B.income.eligible)}</p>`;
+  h += section("3. Net worth", "Assets less liabilities. Mark each row self-declared or documented.");
+  h += `<div class="grid g2"><div><h4 class="small" style="margin:0 0 8px">Assets</h4>${rowsTable("borrower_profile.assets", T.assets)}</div>
+    <div><h4 class="small" style="margin:0 0 8px">Liabilities</h4>${rowsTable("borrower_profile.liabilities", T.liabilities)}</div></div>
+    <p class="muted">Assets ${esc(B.net_worth.assets)} − liabilities ${esc(B.net_worth.liabilities)} = <b>net worth ${esc(B.net_worth.net)}</b></p>`;
+  h += section("4. Past repayment record", "Past and closed loans and cards. A default, settlement or write-off rates the record adverse.");
+  h += rowsTable("borrower_profile.history", T.history);
+  h += `<p class="muted">${esc(B.track.join("; "))}</p>`;
+  h += section("5. Existing liabilities", "Live obligations. Rows closed by the new loan are left out of the monthly obligations.");
+  h += rowsTable("borrower_profile.obligations", T.obligations);
+  h += `<p class="muted">Outstanding (fund based) ${esc(B.obligations.outstanding)} · non-fund ${esc(B.obligations.nonfund)} · monthly obligations ${esc(B.obligations.monthly)}</p>`;
+  return h + viewClient();
+}
+
+// ---------------------------------------------------------------- step 3: product / facility
+
+function productSpec(name) {
+  for (const [cat, groups] of Object.entries(M.catalogue)) for (const [grp, prods] of Object.entries(groups))
+    if (prods[name]) return { ...prods[name], category: cat, group: grp, secured: !M.unsecured_default.includes(name), trade: M.trade_finance.includes(name) };
+  return { fields: [] };
+}
 function facilityFields(f, i) {
   const p = productSpec(f.product);
   return p.fields.map((k) => {
@@ -289,42 +360,66 @@ function facilityFields(f, i) {
     return field(spec.label, inner, spec.help);
   }).join("");
 }
-function productSpec(name) {
-  for (const [cat, groups] of Object.entries(M.catalogue)) for (const [grp, prods] of Object.entries(groups))
-    if (prods[name]) return { ...prods[name], category: cat, group: grp };
-  return { fields: [] };
+function pickerProducts() {
+  if (ui.prodSearch) {
+    const q = ui.prodSearch.toLowerCase();
+    return Object.values(M.catalogue).flatMap((g) => Object.values(g).flatMap((p) => Object.keys(p))).filter((n) => n.toLowerCase().includes(q));
+  }
+  const tree = M.taxonomy.Debt[ui.basis];
+  return ui.secured === "Any" ? [...tree.Secured, ...tree.Unsecured] : tree[ui.secured];
 }
-function viewLoan() {
-  const b = S.case.borrower, t = S.totals;
-  const groups = M.catalogue[ui.newCat];
-  if (!ui.newGrp || !groups[ui.newGrp]) ui.newGrp = Object.keys(groups)[0];
-  const prods = groups[ui.newGrp];
-  if (!ui.newProd || !prods[ui.newProd]) ui.newProd = Object.keys(prods)[0];
-  const spec = prods[ui.newProd];
-  let h = section("Borrower", "Who is borrowing. The constitution decides the KYC checklist in step 3.");
-  h += `<div class="card"><div class="grid g-2-1-1">
-    ${field("Legal name of the borrower", input("borrower.name", b.name, "text", 'placeholder="e.g. Acme Polymers Pvt Ltd"'))}
-    ${field("Constitution", select("borrower.constitution", b.constitution, M.constitutions))}
-    ${field("MSME (Udyam)", select("borrower.msme_class", b.msme_class, M.msme))}
-    ${field("Industry / activity", input("borrower.industry", b.industry, "text", 'placeholder="e.g. Plastic packaging manufacturer"'))}
-    ${field("Existing bank exposure (₹, all lenders)", input("borrower.existing_exposure", b.existing_exposure, "num", 'min="0"') + (b.existing_exposure ? `<small>${inr(b.existing_exposure)}</small>` : ""))}
-    ${field("Years in business", input("borrower.years_in_business", b.years_in_business, "num", 'min="0" step="1"'))}</div></div>`;
-  h += section("Facilities requested", "Add each limit the client is asking for. Fund-based facilities lend money; non-fund-based ones (guarantees, LCs) become loans only if invoked.");
-  h += `<div class="card"><div class="field"><span>Category</span>${seg("newCat", ui.newCat, Object.keys(M.catalogue))}</div><div class="spacer"></div>
-    <div class="grid g2">${field("Type", `<select data-ui="newGrp">${Object.keys(groups).map((g) => `<option ${g === ui.newGrp ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>`)}
-    ${field("Facility", `<select data-ui="newProd">${Object.keys(prods).map((g) => `<option ${g === ui.newProd ? "selected" : ""}>${esc(g)}</option>`).join("")}</select>`)}</div>
-    <p class="muted">Typical tenor: <b>${esc(spec.tenor)}</b> · Usual security: <b>${esc(spec.security)}</b></p>
-    <button class="btn primary" data-action="add-facility">＋ Add this facility</button></div>`;
+function viewProduct() {
+  const P = S.product;
+  let h = section("Choose the financial solution", "Equity or debt → fund based or non-fund based → secured or unsecured → product. Or search every facility.");
+  h += `<div class="card"><div class="hstack">${seg("solution", ui.solution, ["Debt", "Equity"])}`;
+  if (ui.solution === "Debt") h += `${seg("basis", ui.basis, ["Fund based", "Non-fund based"])}${seg("secured", ui.secured, ["Secured", "Unsecured", "Any"])}`;
+  h += `</div><div class="spacer"></div>`;
+  if (ui.solution === "Debt") {
+    const list = pickerProducts();
+    if (!list.includes(ui.newProd)) ui.newProd = list[0];
+    const spec = ui.newProd ? productSpec(ui.newProd) : null;
+    h += `<div class="grid g2">${field("Search all facilities", `<input type="text" data-ui="prodSearch" value="${esc(ui.prodSearch)}" placeholder="e.g. guarantee, LAP, invoice">`)}
+      ${field("Product", list.length ? `<select data-ui="newProd">${list.map((n) => `<option ${n === ui.newProd ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>` : `<div class="muted">No match.</div>`)}</div>`;
+    if (spec) h += `<p class="muted">${esc(spec.category)} · ${esc(spec.group)} · default ${spec.secured ? "secured" : "unsecured"}${spec.trade ? " · trade finance" : ""} · typical tenor <b>${esc(spec.tenor)}</b> · usual security <b>${esc(spec.security)}</b></p>
+      <button class="btn primary" data-action="add-facility">＋ Add this facility</button>`;
+  } else {
+    h += `<p class="muted">Equity raise, investor funding or promoter infusion. Kept apart from debt: no DSCR or security, and never added to exposure.</p>
+      <button class="btn primary" data-action="add-equity">＋ Add an equity request</button>`;
+  }
+  h += `</div>`;
+  if (S.case.facilities.length || S.case.equity.length) h += tiles(P.tiles);
+
+  if (S.case.facilities.length) h += section("Debt facilities", "Each facility asks for its own fields. Change secured / unsecured if this deal differs from the default.");
   S.case.facilities.forEach((f, i) => {
-    const p = productSpec(f.product);
-    h += fold("fac" + f.id, `${i + 1}. ${esc(f.product)} — ${f.amount ? inr(f.amount) : "amount not set"}`,
-      `<div class="hstack" style="margin-bottom:12px">${pill("neutral", p.category)} ${pill("neutral", p.group)}</div>
-       <div class="grid g2">${facilityFields(f, i)}</div><div class="spacer"></div>
+    const p = productSpec(f.product), cl = P.classes[f.id] || {};
+    h += fold("fac" + f.id, `${i + 1}. ${esc(f.product)} — ${f.amount ? inr(f.amount) : "amount not set"} <span class="muted small">${esc(cl.label || "")}</span>`,
+      `<div class="hstack" style="margin-bottom:12px">${pill("neutral", p.category)} ${pill("neutral", p.group)}${p.trade ? " " + pill("neutral", "Trade finance") : ""}</div>
+       <div class="grid g2">${field("Secured or unsecured", `<select data-bind="facilities.${i}.secured" data-kind="bool"><option value="true" ${cl.secured ? "selected" : ""}>Secured</option><option value="false" ${cl.secured ? "" : "selected"}>Unsecured</option></select>`,
+         cl.secured ? "Security expected in step 2" : "No security expected")}${facilityFields(f, i)}</div><div class="spacer"></div>
        <button class="btn sm danger" data-remove-fac="${i}">Remove facility</button>`, !f.amount);
   });
-  if (S.case.facilities.length) h += tiles([{ label: "Fund based", value: t.text.fund }, { label: "Non-fund based", value: t.text.nonfund },
-    { label: "Total proposed", value: t.text.total }, { label: "Total incl. existing", value: t.with_existing, sub: t.lei ? "LEI needed (≥ ₹5 Cr)" : "Below LEI threshold" }]);
-  return h + viewClient();
+  if (P.nfb.length) {
+    const tt = P.nfb_totals;
+    h += section("Non-fund limits", "No cash moves unless invoked. Utilisation, margin money and the fund-based equivalent (limit less margin × credit conversion factor) that counts in total exposure. Edit utilisation and CCF in each facility.");
+    h += tbl({ columns: ["Instrument", "Limit", "Utilised", "Utilisation", "Available", "Margin", "Margin money", "Commission", "Tenor (m)", "CCF", "Fund-based equivalent"],
+      rows: P.nfb.map((x) => [x.product, x.limit, x.utilised, x.utilisation, x.available, x.margin, x.margin_money, x.commission, String(x.tenor), x.ccf, x.fund_equivalent])
+        .concat([["Total", tt.limit, tt.utilised, tt.utilisation, "", "", tt.margin_money, "", "", "", tt.fund_equivalent]]) });
+  }
+  if (S.case.equity.length) h += section("Equity requested", "Shown in the summary and reports, separate from debt.");
+  S.case.equity.forEach((q, i) => {
+    const E = M.equity_fields, base = `equity.${i}`;
+    h += fold("eq" + q.id, `Equity ${i + 1}. ${esc(q.instrument || "instrument not set")} — ${q.amount ? inr(q.amount) : "amount not set"}`,
+      `<div class="grid g3">${field("Instrument", select(`${base}.instrument`, q.instrument ?? "", [["", "—"], ...E.instrument]))}
+        ${field("Amount (₹)", input(`${base}.amount`, q.amount, "num", 'min="0"') + (q.amount ? `<small>${inr(q.amount)}</small>` : ""))}
+        ${field("Investor / source", input(`${base}.investor`, q.investor))}
+        ${field("Valuation basis", select(`${base}.valuation_basis`, q.valuation_basis ?? "", [["", "—"], ...E.valuation_basis]))}
+        ${field("Pre-money valuation (₹)", input(`${base}.pre_money`, q.pre_money, "num", 'min="0"'), "Optional; gives the implied dilution")}
+        ${field("Dilution %", input(`${base}.dilution_pct`, q.dilution_pct, "num", 'min="0" max="100"'), `Implied: ${(P.equity[i] || {}).implied_dilution || "—"}`)}</div>
+        <div class="spacer"></div>${field("Use of funds", input(`${base}.use_of_funds`, q.use_of_funds, "textarea"))}
+        <div class="spacer"></div><button class="btn sm danger" data-del-row="equity|${i}">Remove equity request</button>`, !q.amount);
+  });
+  if (!S.case.facilities.length && !S.case.equity.length) h += note("info", "Nothing chosen yet. Pick a solution above.");
+  return h;
 }
 
 function clientTable(name) {
@@ -343,7 +438,7 @@ function viewClient() {
   const c = S.case.client;
   const t = (k, label, ph = "") => field(label, input(`client.${k}`, c[k], "text", ph ? `placeholder="${esc(ph)}"` : ""));
   const exp = c.expenses || {}, ytd = c.ytd || {};
-  let h = section("Client details", "From the fact-find form and loan detail sheet. These go into the bank report and the internal CAM; anything left blank prints as a dash.");
+  let h = section("Client details (fact-find)", "Contact details, promoters, customers and suppliers for the bank report and the internal CAM. All optional; blanks print as a dash.");
   h += fold("ff-profile", "Business profile", `<div class="grid g2">${t("address", "Registered address")}${t("city_pin", "City & PIN code")}
     ${t("contact_person", "Contact person")}${t("mobile", "Contact number")}${t("email", "Email ID")}${t("website", "URL / website")}
     ${t("incorporated", "Date of incorporation", "DD/MM/YYYY")}${t("employees", "No. of employees")}${t("udyam_no", "Udyam registration number")}
@@ -352,7 +447,6 @@ function viewClient() {
     ${field("Vintage & brief history", input("client.history", c.history, "textarea"))}<div class="spacer"></div>
     ${t("group_companies", "Group companies / associate concerns")}`, !c.address);
   h += fold("ff-promoters", "Directors / partners / promoters", `<p class="muted" style="margin-top:0">Enter only the last 4 digits of Aadhaar. The report always prints it masked.</p>${clientTable("promoters")}`);
-  h += fold("ff-obl", "Existing loan obligations — every EMI and limit", clientTable("obligations"));
   h += fold("ff-parties", "Major customers, suppliers and bills receivable", `<h4 class="small" style="margin:4px 0 8px">Customers</h4>${clientTable("customers")}
     <h4 class="small" style="margin:18px 0 8px">Suppliers</h4>${clientTable("suppliers")}<h4 class="small" style="margin:18px 0 8px">Bills receivable</h4>${clientTable("receivables")}`);
   const expTotal = EXPENSES.reduce((a, [k]) => a + (Number(exp[k]) || 0), 0);
@@ -366,13 +460,21 @@ function viewClient() {
   return h;
 }
 
-// ---------------------------------------------------------------- step 2: security
+// ---------------------------------------------------------------- step 2: security (optional)
 
 function viewSecurity() {
-  const types = M.security_types, sx = S.security;
+  const types = M.security_types, sx = S.security, opted = S.case.security_opted;
   if (!ui.newSec) ui.newSec = Object.keys(types)[0];
   const st = types[ui.newSec];
-  let h = section("Security offered", "Primary security, collateral and guarantees. Margins turn market value into realisable value — change them to your lender's policy.");
+  let h = section("Offering security / collateral?", "Security is optional. Choose “No” for an unsecured request - the step is then skipped and cover shows n/a.");
+  h += `<div class="card"><div class="seg" data-opted>${Object.entries(M.security_opted).map(([k, l]) => `<button type="button" data-val="${k}" class="${k === opted ? "on" : ""}">${esc(l)}</button>`).join("")}</div>
+    ${sx.secured_products.length ? `<p class="muted" style="margin-bottom:0">Secured products in step 3: ${esc(sx.secured_products.join(", "))}.</p>` : ""}</div>`;
+  if (opted === "no") {
+    h += note("info", "Not applicable - unsecured request. Security cover: n/a.");
+    if (sx.flags.length) h += flags(sx.flags);
+    if (!S.case.securities.length) return h;
+  }
+  h += section("Security offered", "Bank investments (FD, LIC, shares, MF), government bonds (G-Secs, SGB, NSC / KVP), property, plant & machinery, stock, receivables, vehicles, gold, lease rentals, cash margin and guarantees. Margins turn market value into realisable value — change them to your lender's policy.");
   h += `<div class="card"><div class="grid g-3-1" style="align-items:end">${field("Add a security", `<select data-ui="newSec">${Object.keys(types).map((k) =>
     `<option ${k === ui.newSec ? "selected" : ""}>${esc(k)}</option>`).join("")}</select>`)}<button class="btn primary" data-action="add-security">＋ Add</button></div>
     <p class="muted" style="margin-bottom:0">${esc(st.class)} · ${esc(st.charge)} · typical margin ${st.margin}% · Documents: ${esc(st.docs)}</p></div>`;
@@ -400,7 +502,7 @@ function viewSecurity() {
   });
   if (S.case.securities.length || S.case.facilities.length) {
     h += section("Cover", "Realisable value against exposure (non-fund limits net of cash margin).") + tiles(sx.tiles);
-    if (sx.flags.length) h += `<div class="spacer"></div>` + flags(sx.flags);
+    if (sx.flags.length && opted !== "no") h += `<div class="spacer"></div>` + flags(sx.flags);
   }
   return h;
 }
@@ -409,13 +511,14 @@ function viewSecurity() {
 
 function viewKyc() {
   const k = S.kyc, b = S.case.borrower;
-  let h = section("KYC checklist", `Documents to collect for a ${esc(b.constitution.toLowerCase())}. They are attached to the credit file as documentation; the app does not read or verify them.`);
-  h += `<div class="card tight">${k.checklist.map((r) => `<div class="cl two"><div class="n">${esc(r.label)}${r.optional ? ' <span class="muted">(if applicable)</span>' : ""}</div>
-    <div>${r.ids.length ? pill("good", "Attached · " + r.ids.join(", ")) : pill("neutral", r.optional ? "—" : "Not attached")}</div></div>`).join("")}
+  let h = section("KYC checklist", `Documents usually asked for from a ${esc(b.constitution.toLowerCase())}. Nothing here blocks the case: mark each one provided, not available or not applicable. Attached files are documentation only; the app does not read or verify them.`);
+  h += `<div class="card tight"><p class="muted" style="margin:10px 0 4px">${k.resolved} of ${k.checklist.length} resolved</p>${k.checklist.map((r) => `<div class="cl"><div class="n">${esc(r.label)}<div class="muted small">${esc(r.tier)}</div></div>
+    <div>${r.attached ? pill("good", "Provided · " + r.ids.join(", ")) : pill(r.status === "na" ? "neutral" : r.status === "provided" ? "good" : r.status ? "warning" : "neutral", r.status_label)}</div>
+    <div>${r.attached ? "" : select(`kyc_status.${r.kind}`, r.status || "", [["", "Not resolved"], ...Object.entries(M.kyc_statuses)])}</div></div>`).join("")}
     <p class="muted" style="margin:10px 0">For every director, partner, guarantor and beneficial owner (&gt;10% holding): PAN and one ID / address proof (masked Aadhaar, passport, voter ID or driving licence), plus a photograph.</p></div>`;
   const entityN = k.files.filter((f) => M.entity_kinds.includes(f.doc_type)).length, personN = k.files.filter((f) => M.person_kinds.includes(f.doc_type)).length;
-  h += `<div class="grid g2">${uploader("kyc_docs", { icon: "🏢", title: "Entity documents", ask: "Certificate of incorporation, MOA, AOA, PAN, GST certificate, board resolution, shareholding, address proof, Udyam, LEI…", required: true, count: entityN, type: "entity" })}
-    ${uploader("kyc_docs", { icon: "👥", title: "Directors, partners & guarantors", ask: "PAN, masked Aadhaar, passport / voter ID / DL, photo. Type the person's name, then upload their documents.", required: true, count: personN, type: "person",
+  h += `<div class="grid g2">${uploader("kyc_docs", { icon: "🏢", title: "Entity documents", ask: "Certificate of incorporation, MOA, AOA, PAN, GST certificate, board resolution, shareholding, address proof, Udyam, LEI…", required: false, count: entityN, type: "entity" })}
+    ${uploader("kyc_docs", { icon: "👥", title: "Directors, partners & guarantors", ask: "PAN, masked Aadhaar, passport / voter ID / DL, photo. Type the person's name, then upload their documents.", required: false, count: personN, type: "person",
       extra: `<input type="text" data-ui="kycPerson" value="${esc(ui.kycPerson)}" placeholder="Name of the director / partner / guarantor">` })}</div>`;
   if (k.files.length) {
     h += section("Attached documents", "The document type is guessed from the file name. Correct it here if needed.");
@@ -513,12 +616,15 @@ function viewAnalysis() {
 
 function viewRepayment() {
   const r = S.repay;
-  if (!r) return note("info", "Add the facilities requested in step 1 first.");
-  let h = r.has_fin ? "" : note("warn", "No financial statements read yet (step 4). Repayment capacity, turnover / MPBF eligibility and DSCR need them; you can still set the repayment structure.");
+  if (!r) return note("info", "No debt is requested (step 3), so there is nothing to repay. Equity requests appear in the summary.");
+  let h = section("From step 1: repayment potential", "The proposal's monthly outgo against the room for a new EMI worked out from income and existing obligations.");
+  h += `<div class="card"><div style="margin-bottom:10px">${pill(r.potential.verdict.status, r.potential.verdict.label)} <span class="muted">${esc(r.potential.verdict.meaning)}</span></div>${tiles(r.potential.tiles)}
+    ${r.potential.missing.length ? note("info", "Step 1 is missing: " + esc(r.potential.missing.join(", "))) : ""}</div>`;
+  h += r.has_fin ? "" : note("warn", "No financial statements read yet (step 5). Repayment capacity, turnover / MPBF eligibility and DSCR need them; you can still set the repayment structure.");
   h += tabs("repTab", ui.repTab, [["cap", "How they will repay"], ["structure", "Repayment structure requested"], ["elig", "Eligibility"]]);
   if (ui.repTab === "cap") {
     const c = r.capacity;
-    if (!c) return h + note("info", "Needs the financial statements from step 4.");
+    if (!c) return h + note("info", "Needs the financial statements from step 5.");
     h += `<div class="card"><div class="muted">Repayment capacity · based on ${esc(c.fy)} financials, bank statements, GST and the structure requested</div>
       <div style="margin:8px 0 4px">${pill(c.verdict.status, c.verdict.label)}</div><div>${esc(c.verdict.meaning)}</div></div>`;
     h += section("Observations", "Written from the numbers below. They go into the credit note.");
@@ -542,7 +648,7 @@ function viewRepayment() {
         body += `<div class="spacer"></div>` + field("Principal % per year (comma separated, should total 100)", input(`${base}.structured`, cfg.structured));
         if (Math.abs(total - 100) > 0.5) body += note("warn", `These add up to ${total.toFixed(0)}% — the balance is collected in the last instalment.`);
       }
-      if (!s.schedule) body += `<p class="muted">Set amount and tenor in step 1 to see the schedule.</p>`;
+      if (!s.schedule) body += `<p class="muted">Set amount and tenor in step 3 to see the schedule.</p>`;
       else body += `<div class="spacer"></div>${tiles(s.schedule.tiles)}<div class="spacer"></div>${chartBox("c-sch-" + s.id)}
         ${fold("sch" + s.id, "Full schedule", `<div class="scroll-y">${tbl(s.schedule.table)}</div>`, false)}`;
       h += `<div class="card">${body}</div>`;
@@ -552,7 +658,7 @@ function viewRepayment() {
     h += `<div class="card"><div class="grid g3">${field("Cash-accrual growth per year (%)", input("dscr.growth_pct", d.growth_pct, "num", 'min="-50" max="100"'))}
       ${field("Average utilisation of new CC/OD (%)", input("dscr.wc_utilisation_pct", d.wc_utilisation_pct, "num", 'min="0" max="100"'))}
       ${field("Tax rate (%)", input("dscr.tax_pct", d.tax_pct, "num", 'min="0" max="50"'))}</div></div>`;
-    if (!r.dscr) h += note("info", "Needs the financial statements from step 4.");
+    if (!r.dscr) h += note("info", "Needs the financial statements from step 5.");
     else {
       h += `<p class="muted">${esc(r.dscr.base)}</p>`;
       if (r.dscr.table) h += tiles(r.dscr.tiles) + `<div class="spacer"></div>` + chartBox("c-dscr") + tbl(r.dscr.table);
@@ -574,15 +680,21 @@ function viewSummary() {
   const s = S.summary, b = S.case.borrower, rep = S.case.report;
   let h = `<div class="card"><div style="font-family:var(--display);font-size:1.15rem;font-weight:800">${esc(b.name || "Unnamed borrower")}</div>
     <div class="muted">${esc(b.constitution)} · ${esc(b.industry || "industry not set")} · MSME: ${esc(b.msme_class)} · ${b.years_in_business} yrs in business</div>
-    <div class="hstack" style="margin-top:10px">${s.steps.map((x) => pill(x.status, x.name)).join(" ")}</div></div>`;
+    </div>`;
+  h += section("Readiness by step", "Complete / Partial / Skipped (optional) / Not started. Steps can be done in any order.");
+  h += `<div class="card tight">${s.steps.map((x, i) => `<div class="cl"><div class="n"><button class="btn ghost sm" data-step="${i}">${i + 1}. ${esc(x.name)}</button></div>
+    <div>${pill(x.status, x.state)}</div><div class="muted">${esc(x.note || "")}</div></div>`).join("")}</div>`;
   h += section("Key numbers") + tiles(s.tiles);
+  h += section("Repayment potential (step 1)") + `<div class="card">${pill(s.potential.verdict.status, s.potential.verdict.label)} ${esc(s.potential.verdict.meaning)}
+    ${s.potential.observations.length ? `<ul style="margin:10px 0 0">${s.potential.observations.map((o) => `<li>${esc(o)}</li>`).join("")}</ul>` : ""}</div>`;
   if (s.capacity) h += section("Repayment capacity") + `<div class="card">${pill(s.capacity.verdict.status, s.capacity.verdict.label)} ${esc(s.capacity.verdict.meaning)}
     <ul style="margin:10px 0 0">${s.capacity.notes.map((n) => `<li><b>${esc(n.title)}.</b> ${esc(n.text)}</li>`).join("")}</ul></div>`;
-  h += section("Proposal") + (s.proposal.rows.length ? tbl(s.proposal) : note("info", "No facilities yet."));
-  h += section("All findings", "Everything open across loan request, security, KYC, financials and repayment.");
+  h += section("Proposal — debt") + (s.proposal.rows.length ? tbl(s.proposal) : note("info", "No debt facilities."));
+  if (s.equity.length) h += section("Proposal — equity (separate from debt)") + tbl({ columns: ["Instrument", "Amount", "Investor", "Dilution", "Use of funds"], rows: s.equity });
+  h += section("All findings", "Everything open across the borrower, security, product, KYC, financials and repayment. Missing documents are information, not errors.");
   h += `<div class="seg" data-sev>${["High", "Medium", "Low"].map((x) => `<button type="button" data-val="${x}" class="${ui.sev.includes(x) ? "on" : ""}">${x}</button>`).join("")}</div><div class="spacer"></div>`;
   h += flags(s.flags.filter((f) => ui.sev.includes(f.severity)));
-  h += section("Report for the bank", "One PDF: company name, company KYC, director KYC, financials (last 2 years), GST (last 12 months), proposed plan, security and repayment, then supporting analysis and the financial and security documents as annexures. The CAM-Lite is internal and separate.");
+  h += section("Report for the bank", "One PDF: company name, company KYC, director KYC, borrower profile & repayment potential, financials (last 2 years), GST (last 12 months), proposed plan, security and repayment, then supporting analysis and the financial and security documents as annexures. The CAM-Lite is internal and separate.");
   h += fold("rep-details", "Report details — bank, preparer, recommendation", `<div class="grid g2">${REPORT_FIELDS.map(([k, l, ph]) => field(l, input(`report.${k}`, rep[k], "text", `placeholder="${esc(ph)}"`))).join("")}</div>
     <div class="spacer"></div>${field("Recommendation / remarks for the bank", input("report.recommendation", rep.recommendation, "textarea", 'placeholder="e.g. Recommended for ₹10 Cr fund-based and ₹2.5 Cr non-fund limits, subject to…"'))}`, !rep.bank);
   h += fold("cam-details", "Internal CAM details — not sent to the lender", `<div class="grid g2">${CAM_FIELDS.map(([k, l]) => field(l, input(`report.${k}`, rep[k]))).join("")}</div>`, false);
@@ -599,11 +711,11 @@ function viewSummary() {
 // ---------------------------------------------------------------- after render: charts and drop zones
 
 function afterRender() {
-  if (ui.step === 3 && ui.finTab === "analysis" && S.fin.analysis) {
+  if (ui.step === 4 && ui.finTab === "analysis" && S.fin.analysis) {
     if (ui.anaTab === "fin") drawChart("c-fin", S.fin.analysis.fin_chart, "bar", { y: S.unit });
     if (ui.anaTab === "bank") drawChart("c-bank", S.fin.analysis.bank_chart, "line", { y: S.unit });
   }
-  if (ui.step === 4 && S.repay && ui.repTab === "structure") {
+  if (ui.step === 5 && S.repay && ui.repTab === "structure") {
     S.repay.structure.forEach((s) => s.schedule && drawChart("c-sch-" + s.id, s.schedule.chart, "bar", { stack: true, y: S.unit }));
     if (S.repay.dscr && S.repay.dscr.chart) drawChart("c-dscr", S.repay.dscr.chart, "line", { rule: S.repay.dscr.chart.rule, y: "DSCR (x)" });
   }
@@ -627,6 +739,7 @@ function afterRender() {
 
 function coerce(el) {
   if (el.type === "checkbox") return el.checked;
+  if (el.dataset.kind === "bool") return el.value === "true";
   if (el.dataset.kind === "num") return el.value === "" ? null : Number(el.value);
   return el.value;
 }
@@ -634,14 +747,16 @@ document.addEventListener("change", async (e) => {
   const el = e.target;
   if (el.dataset.bind) {
     let v = coerce(el);
-    if (v === null && /(amount|value|pct|months|exposure|years_in_business|expenses|ytd)/.test(el.dataset.bind) && !/client\.(promoters|obligations|customers|suppliers|receivables)/.test(el.dataset.bind)) v = 0;
+    // a blank in a table stays blank (never guessed); a blank amount on a facility or security means zero
+    if (v === null && /(amount|value|pct|months|exposure|years_in_business|expenses|ytd)/.test(el.dataset.bind)
+      && !/^(client\.(promoters|customers|suppliers|receivables)|borrower_profile|equity)\./.test(el.dataset.bind)) v = 0;
     setPath(S.case, el.dataset.bind, v);
     if (el.dataset.bind === "borrower.constitution" || el.tagName === "SELECT" || el.type === "checkbox" || el.type === "date") return saveCase(true);
     return saveCase();
   }
   if (el.dataset.ui) {
     ui[el.dataset.ui] = el.value;
-    if (el.dataset.ui !== "kycPerson") render();
+    if (el.dataset.ui !== "kycPerson" && el.dataset.ui !== "prodSearch") render();
     return;
   }
   if (el.dataset.file) {
@@ -663,7 +778,10 @@ document.addEventListener("change", async (e) => {
     if (await act("PUT", "/api/settings", { api_key: el.value })) toast(el.value ? "API key set for this session" : "API key cleared");
   }
 });
-document.addEventListener("input", (e) => { if (e.target.dataset.ui === "kycPerson") ui.kycPerson = e.target.value; });
+document.addEventListener("input", (e) => {
+  if (e.target.dataset.ui === "kycPerson") ui.kycPerson = e.target.value;
+  if (e.target.dataset.ui === "prodSearch") { ui.prodSearch = e.target.value; clearTimeout(ui.searchT); ui.searchT = setTimeout(render, 250); }
+});
 document.addEventListener("toggle", (e) => { if (e.target.dataset && e.target.dataset.fold) ui.open[e.target.dataset.fold] = e.target.open; }, true);
 
 document.addEventListener("click", async (e) => {
@@ -679,16 +797,25 @@ document.addEventListener("click", async (e) => {
     else ui[name] = d.val;
     return render();
   }
+  if (el.closest("[data-opted]") && d.val) { S.case.security_opted = d.val; return saveCase(true); }
   if (el.closest("[data-sev]") && d.val) { ui.sev = ui.sev.includes(d.val) ? ui.sev.filter((x) => x !== d.val) : [...ui.sev, d.val]; return render(); }
   const tabEl = el.closest("[data-tabs]");
   if (tabEl && d.val) { ui[tabEl.dataset.tabs] = d.val; return render(); }
   if (d.action === "demo") { ui.step = 0; ui.edits = null; if (await act("POST", "/api/demo", undefined, "Loading the demo…")) toast("Demo company loaded"); return; }
   if (d.action === "reset") { if (!confirm("Start a new case? Unsaved work in this case will be cleared.")) return; ui.step = 0; ui.edits = null; return act("POST", "/api/reset"); }
   if (d.action === "add-facility") {
-    const spec = M.catalogue[ui.newCat][ui.newGrp][ui.newProd], fac = { id: uid(), product: ui.newProd };
+    const spec = productSpec(ui.newProd), fac = { id: uid(), product: ui.newProd, secured: spec.secured };
     spec.fields.forEach((k) => (fac[M.fields[k].key] = M.fields[k].default));
-    if (ui.newCat === "Non-fund based") { fac.rate_pct = 1.5; if ("tenor_months" in fac) fac.tenor_months = 12; }
+    if (spec.category === "Non-fund based") {
+      fac.rate_pct = 1.5; fac.limit_utilised = 0; fac.ccf_pct = M.ccf[ui.newProd] ?? 100;
+      if ("tenor_months" in fac) fac.tenor_months = 12;
+    }
     S.case.facilities.push(fac); ui.open["fac" + fac.id] = true;
+    return saveCase(true);
+  }
+  if (d.action === "add-equity") {
+    const q = { id: uid(), instrument: M.equity_fields.instrument[0], amount: 0 };
+    S.case.equity.push(q); ui.open["eq" + q.id] = true;
     return saveCase(true);
   }
   if (d.removeFac !== undefined) { const f = S.case.facilities.splice(Number(d.removeFac), 1)[0]; delete S.case.repay[f.id]; return saveCase(true); }
@@ -700,8 +827,17 @@ document.addEventListener("click", async (e) => {
   }
   if (d.removeSec !== undefined) { S.case.securities.splice(Number(d.removeSec), 1); return saveCase(true); }
   if (d.suggest) { const g = S.security.suggestions.find((x) => x.doc_id === d.suggest); S.case.securities.push(g.security); return saveCase(true); }
-  if (d.addRow) { (S.case.client[d.addRow] = S.case.client[d.addRow] || []).push({}); return render(); }
-  if (d.delRow) { const [name, i] = d.delRow.split("|"); S.case.client[name].splice(Number(i), 1); return saveCase(true); }
+  if (d.addRow) {
+    const path = d.addRow.includes(".") ? d.addRow : `client.${d.addRow}`;
+    const rows = getPath(S.case, path) || [];
+    rows.push({}); setPath(S.case, path, rows);
+    return render();
+  }
+  if (d.delRow) {
+    const [name, i] = d.delRow.split("|"), path = name.includes(".") || name === "equity" ? name : `client.${name}`;
+    getPath(S.case, path).splice(Number(i), 1);
+    return saveCase(true);
+  }
   if (d.remove) { const [store, id] = d.remove.split("|"); ui.edits = null; return act("DELETE", `/api/files/${store}/${id}`); }
   if (d.unlock) {
     const [store, id] = d.unlock.split("|"), pw = document.querySelector(`[data-pw="${CSS.escape(d.unlock)}"]`).value;

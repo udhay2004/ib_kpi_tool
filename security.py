@@ -2,6 +2,9 @@
 
 Margins are typical Indian bank haircuts used to get from market value to a
 realisable / lendable value. Lenders differ - they are editable in the UI.
+
+Security is optional (step 2): the case says whether security is offered - "yes", "no" (unsecured request) or
+"later" - and the checks below follow that choice instead of treating every unsecured case as a defect.
 """
 
 from datetime import date
@@ -14,8 +17,9 @@ SECURITY_DOC_SCHEMA = _obj({
     "suggested_security_kind": {"type": "string", "enum": [
         "Residential property", "Commercial property", "Industrial property / factory", "Open land", "Plant & machinery",
         "Stock (inventory)", "Book debts / receivables (< 90 days)", "Vehicles", "Fixed deposit", "Listed shares",
-        "Mutual fund units", "Life insurance policy (surrender value)", "Gold", "Assignment of lease rentals / escrow",
-        "Cash margin", "Personal guarantee", "Corporate guarantee", "CGTMSE cover"]},
+        "Mutual fund units", "Life insurance policy (surrender value)", "Gold", "Government securities (G-Secs / T-bills)",
+        "Sovereign Gold Bonds (SGB)", "NSC / KVP / post office deposits", "Bonds / debentures (listed)",
+        "Assignment of lease rentals / escrow", "Cash margin", "Personal guarantee", "Corporate guarantee", "CGTMSE cover"]},
     "description": {"type": ["string", "null"], "description": "Address / survey no. / asset description"},
     "owner": STR,
     "market_value": NUM,
@@ -50,6 +54,11 @@ SECURITY_TYPES = {
     "Mutual fund units": ("Collateral", "Lien / pledge", 30, "Lien marking confirmation from RTA"),
     "Life insurance policy (surrender value)": ("Collateral", "Assignment", 10, "Policy + assignment deed"),
     "Gold": ("Collateral", "Pledge", 25, "Purity / valuation certificate"),
+    "Government securities (G-Secs / T-bills)": ("Collateral", "Lien / pledge", 10,
+                                                 "Demat / SGL / RBI Retail Direct holding statement with lien marked"),
+    "Sovereign Gold Bonds (SGB)": ("Collateral", "Lien / pledge", 25, "SGB holding statement with lien marked in favour of the bank"),
+    "NSC / KVP / post office deposits": ("Collateral", "Pledge / transfer", 15, "Original certificates pledged / transferred to the bank"),
+    "Bonds / debentures (listed)": ("Collateral", "Pledge", 25, "Demat pledge confirmation; credit rating of the issue"),
     "Assignment of lease rentals / escrow": ("Primary", "Assignment + escrow", 15, "Lease deeds, tripartite / escrow agreement"),
     "Cash margin": ("Primary", "Lien", 0, "FD under lien"),
     "Personal guarantee": ("Guarantee", "Guarantee", 100, "Guarantee deed, guarantor KYC, net-worth statement, ITRs"),
@@ -58,6 +67,7 @@ SECURITY_TYPES = {
 }
 
 PROPERTY = {"Residential property", "Commercial property", "Industrial property / factory", "Open land"}
+OPTED = {"yes": "Offering security", "no": "No security (unsecured request)", "later": "Decide later"}
 REVALUE_YEARS = 3  # property valuations are usually refreshed every 3 years
 
 
@@ -87,13 +97,36 @@ def cover(securities: list, total_exposure: float) -> dict:
     }
 
 
+def requirement_flags(securities: list, facilities: list, opted: str) -> list:
+    """Warnings (never blocks) where the security chosen and the products chosen disagree, plus the note that an
+    unsecured request usually prices higher. facilities: dicts with product and secured (bool). [(sev, finding, step)]"""
+    out = []
+    debt = [f for f in facilities if f.get("product")]
+    secured = [f["product"] for f in debt if f.get("secured")]
+    unsecured = [f["product"] for f in debt if not f.get("secured")]
+    tangible = [s for s in securities if SECURITY_TYPES[s["kind"]][0] != "Guarantee"]
+    if secured and (opted == "no" or not tangible):
+        out.append(("Medium", f"Secured product(s) chosen but no security {'offered (marked unsecured)' if opted == 'no' else 'entered yet'}: "
+                              + ", ".join(secured), "Add security in step 2, or mark the facility unsecured in step 3"))
+    if unsecured and not secured and tangible:
+        out.append(("Low", "Only unsecured products are chosen, yet security is offered - mark the facility secured in step 3, "
+                           "or confirm the security is extra comfort", "Reclassify or confirm"))
+    if debt and (opted == "no" or (unsecured and not secured)):
+        out.append(("Low", "Unsecured request: lenders usually price it higher and set stricter terms (shorter tenor, "
+                           "lower amount, promoter guarantees)", "Information only - no rate is assumed"))
+    return out
+
+
 def security_flags(securities: list, total_exposure: float, msme_class: str | None, fund_total: float,
-                   cash_margins: float = 0.0) -> list:
+                   cash_margins: float = 0.0, opted: str = "yes") -> list:
     """Returns [(severity, finding, next_step)]. cash_margins: cash margin on the non-fund limits, already netted
-    from total_exposure."""
+    from total_exposure. opted: 'yes' / 'no' / 'later' (step 2 choice)."""
     out, c = [], cover(securities, total_exposure)
     if not securities:
-        out.append(("High", "No security offered", "Ask the client what security they can offer"))
+        if opted == "yes":
+            out.append(("Medium", "Security is offered but none has been entered yet", "Add each security in step 2"))
+        elif opted == "later":
+            out.append(("Low", "Security not decided yet", "Decide in step 2 whether security is offered"))
         return out
     if c["cover"] is not None and c["cover"] < 1.0:
         out.append(("High", f"Security cover {c['cover']:.2f}x – below 1.0x of exposure",

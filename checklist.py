@@ -110,14 +110,20 @@ GUARANTOR_PACK = [
 
 
 def build(case: dict, kyc_kinds: set, doc_types: set) -> list:
-    """[(section, item, status)]; status is Received, Pending or To confirm."""
+    """[(section, item, status)]; status is Received, Pending, To confirm, Not applicable or Not available (the last
+    two when the analyst marked a KYC document so in step 4)."""
     client = case.get("client") or {}
+    profile = case.get("borrower_profile") or {}
+    marked = case.get("kyc_status") or {}
 
     def state(mark):
         if mark is None:
             return "To confirm"
         kind, key = mark.split(":")
-        have = {"kyc": key in kyc_kinds, "doc": key in doc_types, "client": bool(client.get(key))}[kind]
+        if kind == "kyc" and key not in kyc_kinds and marked.get(key) in ("na", "not_available", "provided"):
+            return {"na": "Not applicable", "not_available": "Not available", "provided": "Received"}[marked[key]]
+        have = {"kyc": key in kyc_kinds, "doc": key in doc_types,
+                "client": bool(client.get(key) or profile.get(key))}[kind]
         return "Received" if have else "Pending"
 
     out = [("KYC and constitution", t, state(m)) for t, m in ENTITY_PACK[kyc.family(case["borrower"]["constitution"])]]

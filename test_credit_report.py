@@ -53,9 +53,10 @@ def test_report_has_every_section_and_annexures(demo):
                                                              ("D02", "bank.xlsx", b"PK\x03\x04")]})
     doc = fitz.open("pdf", pdf)
     toc = [t for _, t, _ in doc.get_toc()]
-    for n, title in enumerate(["Company KYC", "Director KYC", "Financials", "GST", "Proposed plan", "Security", "Repayment",
-                               "Banking conduct", "Income tax returns", "Overall assessment", "Risks",
-                               "Compliance checks", "Suggested terms", "Other documents", "Basis of preparation"], 1):
+    for n, title in enumerate(["Company KYC", "Director KYC", "Borrower profile & repayment potential", "Financials", "GST",
+                               "Proposed plan", "Security", "Repayment", "Banking conduct", "Income tax returns",
+                               "Overall assessment", "Risks", "Compliance checks", "Suggested terms", "Other documents",
+                               "Basis of preparation"], 1):
         assert any(t.startswith(f"{n}. {title}") for t in toc), title
     assert "Annexures" in toc
     text = _text(doc)
@@ -63,9 +64,9 @@ def test_report_has_every_section_and_annexures(demo):
     assert text.count("Company KYC CK1 —") == 2 and text.count("Annexure A1 —") == 3 and "Director KYC DK2 —" in text
     pages = {t: p for _, t, p in doc.get_toc()}
     contents = doc[0].get_text("words")  # the page number sits at the right of its title on the cover
-    assert any(w[4] == str(pages["3. Financials — last 2 years"]) and w[0] > cr.BODY.x1 - 40 for w in contents)
+    assert any(w[4] == str(pages["4. Financials — last 2 years"]) and w[0] > cr.BODY.x1 - 40 for w in contents)
     assert pages["1. Company KYC"] < pages["CK1 Certificate of incorporation"] < pages["2. Director KYC"] \
-        < pages["DK2 Aadhaar · Director A"] < pages["3. Financials — last 2 years"]
+        < pages["DK2 Aadhaar · Director A"] < pages["3. Borrower profile & repayment potential"] < pages["4. Financials — last 2 years"]
     assert "Balance sheet 3" in text and "Certificate 2" in text
     assert "Demo Polymers Pvt Ltd" in text and "Comfortable" in text and "Test Bank" in text
     assert "CRILC" in text and "CERSAI" in text  # exposure >= 5 Cr, hypothecated / mortgaged assets

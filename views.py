@@ -10,7 +10,9 @@ import kyc
 import loans
 import repayment as rp
 import security as sec
-from engine import BENCH, FIN_TYPES, MSME, UNITS, clean, fmt, inr, money, na, new_id, pct, records, table
+import borrower as bw
+from engine import (BENCH, EQUITY_FIELDS, FIN_TYPES, MSME, PROFILE_TABLES, STEPS, UNITS, clean, fmt, inr, money, na,
+                    new_id, pct, records, table)
 from intake import CHECKLIST, coverage
 
 STATUS_TXT = {"pending": "Ready to read", "extracted": "Read", "failed": "Failed", "locked": "Password",
@@ -29,6 +31,9 @@ def meta() -> dict:
         "kyc_kinds": kyc.ALL_KINDS, "entity_kinds": list(kyc.ENTITY_DOCS), "person_kinds": list(kyc.PERSON_DOCS),
         "fin_types": FIN_TYPES, "checklist": CHECKLIST,
         "repay_methods": rp.METHODS, "frequencies": list(rp.FREQUENCIES), "threshold_defaults": kpis.THRESHOLDS,
+        "steps": STEPS, "taxonomy": loans.taxonomy(), "trade_finance": sorted(loans.TRADE_FINANCE), "ccf": loans.CCF,
+        "unsecured_default": sorted(loans.UNSECURED_BY_DEFAULT), "profile_tables": PROFILE_TABLES,
+        "equity_fields": EQUITY_FIELDS, "security_opted": sec.OPTED, "kyc_statuses": kyc.STATUSES,
     }
 
 
@@ -69,9 +74,12 @@ def _tile(fk, key, fy, prev, div, label, th_all):
 
 def _security(ws, t) -> dict:
     c = sec.cover(ws.case["securities"], t["net_exposure"])
+    opted = ws.case.get("security_opted", "later")
     st_ = None if c["cover"] is None else ("good" if c["cover"] >= 1.25 else "warning" if c["cover"] >= 1 else "critical")
     flags = sec.security_flags(ws.case["securities"], t["net_exposure"], ws.case["borrower"]["msme_class"], t["fund"],
-                               t["total"] - t["net_exposure"])
+                               t["total"] - t["net_exposure"], opted)
+    flags += sec.requirement_flags(ws.case["securities"], [{"product": f["product"], "secured": loans.is_secured(f)}
+                                                           for f in ws.case["facilities"]], opted)
     suggestions = []
     for d in ws.as_dicts("sec_docs", ws.static_sec):
         x = d.get("extracted")
@@ -94,35 +102,105 @@ def _security(ws, t) -> dict:
                          "owner_is_third_party": False, "value": float(x.get("market_value") or 0), "valuation_date": vd,
                          "valuer": x.get("valuer") or "", "existing_charge": x.get("existing_charge_or_encumbrance") or "",
                          "margin_pct": float(sec.SECURITY_TYPES[kind][2]), "from_doc": d["doc_id"]}})
+    unsecured = opted == "no"
     return {
+        "opted": opted, "secured_products": [f["product"] for f in ws.case["facilities"] if loans.is_secured(f)],
         "realisable": {s["id"]: inr(sec.realisable(s)) for s in ws.case["securities"]},
         "tiles": [{"label": "Exposure to cover", "value": inr(t["net_exposure"])},
-                  {"label": "Market value", "value": inr(c["market_value"])},
-                  {"label": "Realisable value", "value": inr(c["realisable_value"])},
-                  {"label": "Security cover", "value": "—" if c["cover"] is None else f"{c['cover']:.2f}x",
-                   "status": st_, "bench": "≥ 1.25x"}],
+                  {"label": "Market value", "value": "n/a" if unsecured else inr(c["market_value"])},
+                  {"label": "Realisable value", "value": "n/a" if unsecured else inr(c["realisable_value"])},
+                  {"label": "Security cover", "value": "n/a - unsecured" if unsecured else "—" if c["cover"] is None else f"{c['cover']:.2f}x",
+                   "status": None if unsecured else st_, "bench": "≥ 1.25x"}],
         "flags": [{"severity": a, "area": "Security", "finding": b, "evidence": "Step 2", "next_step": n} for a, b, n in flags],
         "suggestions": suggestions, "files": _files(ws, "sec_docs"), "last_run": ws.last_run.get("sec_docs"),
     }
 
 
 def _kyc(ws) -> dict:
-    b = ws.case["borrower"]
-    fam = kyc.family(b["constitution"])
     docs = ws.kyc_docs()
-    have = {}
-    for d in docs:
-        have.setdefault(d["doc_type"], []).append(d["doc_id"])
-    rows = [{"label": kyc.ENTITY_DOCS[k], "optional": False, "ids": have.get(k, [])} for k in kyc.REQUIRED[fam]]
-    rows += [{"label": kyc.ENTITY_DOCS[k], "optional": True, "ids": have.get(k, [])} for k in ("udyam", "lei")
-             if k not in kyc.REQUIRED[fam]]
+    rows = ws.kyc_rows()
     people = sorted({d.get("person") for d in docs if d.get("person")})
-    return {"checklist": rows, "files": _files(ws, "kyc_docs"),
+    return {"checklist": rows, "resolved": sum(r["resolved"] for r in rows), "files": _files(ws, "kyc_docs"),
             "static": [{"doc_id": d["doc_id"], "label": kyc.ALL_KINDS.get(d["doc_type"], d["doc_type"]), "person": d.get("person") or ""}
                        for d in ws.static_kyc or []],
             "people": [{"person": p, "docs": ", ".join(kyc.ALL_KINDS.get(d["doc_type"], d["doc_type"]) for d in docs
                                                        if d.get("person") == p)} for p in people],
             "missing": ws.kyc_missing()}
+
+
+def _money_rows(rows, cols):
+    return [{**r, **{c: (None if r.get(c) is None else r[c]) for c in cols}} for r in rows]
+
+
+def _borrower(ws, s, div, unit) -> dict:
+    """Step 1: the tables as entered plus the repayment-potential panel."""
+    pot, th = s["potential"], s["thresholds"]
+    inc, nw, ob, sc, tr = pot["income"], pot["net_worth"], pot["obligations"], pot["scores"], pot["track"]
+    v = pot["verdict"]
+    fin = s["fin"]
+    accrual = (fin.get("pat") or 0) + (fin.get("depreciation") or 0) if fin and fin.get("pat") is not None else None
+    return {
+        "verdict": v, "observations": pot["observations"], "missing": pot["missing"],
+        "flags": pot["flags"],
+        "tiles": [
+            {"label": "Eligible income (a month)", "value": inr(pot["monthly_income"]),
+             "sub": f"{inr(inc['total_annual'])} a year in all" if inc["total_annual"] is not None else "No income entered"},
+            {"label": "Existing obligations (a month)", "value": inr(ob["monthly"]) if ob["count"] else "—",
+             "sub": f"Outstanding {inr(ob['total_outstanding'])}" if ob["count"] else "None entered"},
+            {"label": "FOIR (existing)", "value": "—" if pot["foir"] is None else f"{pot['foir']:.0%}",
+             "status": None if pot["foir"] is None else "good" if pot["foir"] <= th["foir_max"] else
+             "warning" if pot["foir"] <= th["foir_weak"] else "critical", "bench": f"≤ {th['foir_max']:.0%}"},
+            {"label": "Room for a new EMI", "value": inr(pot["max_emi"]), "sub": "a month, within the FOIR cap"},
+            {"label": "Indicative max loan", "value": inr(pot["max_loan"]),
+             "sub": f"at {pot['rate_pct']:g}% over {pot['tenure_months']} months"},
+            {"label": "Net worth", "value": inr(nw["net_worth"]),
+             "sub": "" if nw["documented_share"] is None else f"{nw['documented_share']:.0%} of assets documented"},
+            {"label": "Bureau (weakest)", "value": sc["worst"] or "—", "status": sc["status"] if sc["worst"] else None,
+             "bench": f"{sc['count']} score(s)" if sc["count"] else ""},
+            {"label": "Track record", "value": tr["rating"], "status": tr["status"], "bench": f"{len(tr['rows'])} account(s)"}],
+        "scores": [{"band": r["band"], "status": r["status"]} for r in sc["rows"]],
+        "income": {"total": inr(inc["total_annual"]), "stable": inr(inc["stable_annual"]),
+                   "eligible": inr(inc["eligible_annual"]), "annual": [inr(r["annual"]) for r in inc["rows"]]},
+        "net_worth": {"assets": inr(nw["total_assets"]), "liabilities": inr(nw["total_liabilities"]),
+                      "net": inr(nw["net_worth"])},
+        "track": tr["reasons"],
+        "obligations": {"outstanding": inr(ob["total_outstanding"]), "nonfund": inr(ob["nonfund_outstanding"]),
+                        "monthly": inr(ob["monthly"]), "closing": len(ob["closing"])},
+        "from_financials": None if accrual is None else f"{fin['fy']}: PAT + depreciation = {inr(accrual)} a year "
+                                                         f"({inr(accrual / 12)} a month)",
+    }
+
+
+def _product(ws, s) -> dict:
+    """Step 3: classification of every facility, the non-fund limit table and equity, kept apart from debt."""
+    t = s["totals"]
+    nfb = []
+    for f in ws.case["facilities"]:
+        lim = loans.nfb_limit(f)
+        if lim:
+            nfb.append({"id": f["id"], "product": f["product"], "limit": inr(lim["limit"]), "utilised": inr(lim["utilised"]),
+                        "utilisation": "—" if lim["utilisation"] is None else f"{lim['utilisation']:.0%}",
+                        "available": inr(lim["available"]), "margin": f"{lim['margin_pct']:g}%",
+                        "margin_money": inr(lim["margin_money"]), "ccf": f"{lim['ccf_pct']:g}%",
+                        "fund_equivalent": inr(lim["fund_equivalent"]),
+                        "commission": "—" if lim["commission_pct"] is None else f"{lim['commission_pct']:g}%",
+                        "tenor": lim["tenor_months"] or "—"})
+    nl = [loans.nfb_limit(f) for f in ws.case["facilities"] if not loans.is_fund(f)]
+    used = sum(x["utilised"] for x in nl)
+    return {
+        "classes": {f["id"]: loans.classification(f) for f in ws.case["facilities"]},
+        "nfb": nfb,
+        "nfb_totals": {"limit": inr(t["nonfund"]), "utilised": inr(used),
+                       "utilisation": f"{used / t['nonfund']:.0%}" if t["nonfund"] else "—",
+                       "margin_money": inr(sum(x["margin_money"] for x in nl)), "fund_equivalent": inr(t["nfb_fund_equivalent"])},
+        "equity": [{"implied_dilution": "—" if r["implied_dilution_pct"] is None else f"{r['implied_dilution_pct']:.1f}%"}
+                   for r in s["equity"]["rows"]],
+        "tiles": [{"label": "Fund-based debt", "value": inr(t["fund"])},
+                  {"label": "Non-fund limits", "value": inr(t["nonfund"]), "sub": f"Fund-based equivalent {inr(t['nfb_fund_equivalent'])}"},
+                  {"label": "Equity (separate)", "value": inr(t["equity"]), "sub": "Not part of debt exposure"},
+                  {"label": "Credit-equivalent exposure", "value": inr(t["credit_equivalent"]),
+                   "sub": f"Secured {inr(t['secured'])} · unsecured {inr(t['unsecured'])}"}],
+    }
 
 
 def _review(ws) -> dict | None:
@@ -222,7 +300,18 @@ def _repayment(ws, s, div, unit) -> dict | None:
     if not case["facilities"]:
         return None
     fin, cap, ass = s["fin"], s["capacity"], s["assessments"]
-    out = {"has_fin": bool(fin), "capacity": None, "structure": [], "dscr": None, "eligibility": []}
+    pot, vs, th = s["potential"], s["proposal_vs_potential"], s["thresholds"]
+    out = {"has_fin": bool(fin), "capacity": None, "structure": [], "dscr": None, "eligibility": [],
+           "potential": {"verdict": pot["verdict"], "tiles": [
+               {"label": "Room for a new EMI (step 1)", "value": inr(pot["max_emi"])},
+               {"label": "Proposal's monthly outgo", "value": inr(vs["new_emi"]) if vs else "—",
+                "status": None if not vs or vs["within_headroom"] is None else "good" if vs["within_headroom"] else "critical",
+                "bench": "within room" if vs and vs["within_headroom"] else "above room" if vs and vs["within_headroom"] is False else ""},
+               {"label": "FOIR after the proposal", "value": "—" if not vs or vs["foir_after"] is None else f"{vs['foir_after']:.0%}",
+                "status": vs["status"] if vs else None, "bench": f"≤ {th['foir_max']:.0%}"},
+               {"label": "Credit-equivalent exposure", "value": inr(s["totals"]["credit_equivalent"]),
+                "sub": f"incl. non-fund equivalent {inr(s['totals']['nfb_fund_equivalent'])}"}],
+               "missing": pot["missing"]}}
     if cap is not None:
         m = cap["metrics"].copy()
         m["Status"] = m["Status"].map({"good": "OK", "warning": "Watch", "critical": "Concern"}).fillna("")
@@ -305,17 +394,25 @@ def _summary(ws, s, div) -> dict:
     for c in ("Amount (₹)", "Eligible (₹)"):
         if c in fac:
             fac[c] = fac[c].map(inr)
-    cap = s["capacity"]
+    cap, pot = s["capacity"], s["potential"]
+    unsecured = s["security_opted"] == "no"
     return {
-        "steps": [{"name": a, "status": b} for a, b in s["steps"]],
+        "steps": s["steps"],
+        "potential": {"verdict": pot["verdict"], "observations": pot["observations"]},
+        "equity": [[r.get("instrument") or "—", inr(r.get("amount")), r.get("investor") or "—",
+                    "—" if r.get("dilution_pct") is None else f"{r['dilution_pct']:.1f}%", r.get("use_of_funds") or "—"]
+                   for r in s["equity"]["rows"]],
         "tiles": [
-            {"label": "Total proposed", "value": inr(t["total"]), "sub": f"Fund {inr(t['fund'])} · NFB {inr(t['nonfund'])}"},
-            {"label": "Security cover", "value": "—" if cov["cover"] is None else f"{cov['cover']:.2f}x",
-             "status": None if cov["cover"] is None else ("good" if cov["cover"] >= 1.25 else "critical"), "bench": "≥ 1.25x"},
+            {"label": "Debt proposed", "value": inr(t["total"]), "sub": f"Fund {inr(t['fund'])} · NFB limits {inr(t['nonfund'])}"},
+            {"label": "Repayment potential", "value": pot["verdict"]["label"], "status": pot["verdict"]["status"],
+             "bench": "step 1"},
+            {"label": "Equity requested", "value": inr(t["equity"]), "sub": "Separate from debt"},
+            {"label": "Security cover", "value": "n/a - unsecured" if unsecured else "—" if cov["cover"] is None else f"{cov['cover']:.2f}x",
+             "status": None if unsecured or cov["cover"] is None else ("good" if cov["cover"] >= 1.25 else "critical"), "bench": "≥ 1.25x"},
             {"label": "Min DSCR (proposal)", "value": "—" if mn is None else f"{mn:.2f}x",
              "status": None if mn is None else ("good" if mn >= th["dscr_min"] else "critical"),
              "bench": f"≥ {th['dscr_min']:.2f}x"},
-            {"label": f"Revenue {fy or ''}", "value": inr(kv("revenue"))},
+
             {"label": "Current ratio", "value": "—" if cr is None else f"{cr:.2f}x",
              "status": None if cr is None else ("good" if cr >= th["current_ratio_benchmark"] else "critical"),
              "bench": f"≥ {th['current_ratio_benchmark']:.2f}x"},
@@ -341,6 +438,8 @@ def state(ws, unit: str, server_key: bool) -> dict:
     out = {
         "case": clean(ws.case), "unit": unit, "server_key": server_key, "has_key": bool(server_key or ws.api_key),
         "thresholds": ws.th,
+        "borrower": _borrower(ws, s, div, unit),
+        "product": _product(ws, s),
         "totals": {**t, "text": {k: inr(v) for k, v in t.items()},
                    "with_existing": inr(t["total"] + (ws.case["borrower"].get("existing_exposure") or 0)),
                    "lei": t["total"] + (ws.case["borrower"].get("existing_exposure") or 0) >= 5e7},

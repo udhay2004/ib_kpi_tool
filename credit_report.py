@@ -196,15 +196,23 @@ def mask_aadhaar(v) -> str:
     return f"XXXX XXXX {digits[-4:]}" if len(digits) >= 4 else "—"
 
 
-def existing_emi(client: dict) -> float:
-    """Monthly EMIs that stay after this loan: marked to count, and not being closed with it."""
-    return sum(o.get("EMI ₹") or 0 for o in client.get("obligations") or []
-               if not _na(o.get("EMI ₹")) and o.get("Count in FOIR") != "N" and o.get("Close with new loan") != "Y")
+def existing_emi(s_or_client) -> float:
+    """Monthly obligations that stay after this loan (step 1 table; rows closed with the new loan left out)."""
+    pot = s_or_client.get("potential") if isinstance(s_or_client, dict) else None
+    if pot:
+        return pot["obligations"]["monthly"]
+    profile = (s_or_client or {}).get("borrower_profile") or {}
+    return sum(o.get("emi") or 0 for o in profile.get("obligations") or [] if o.get("close_with_new") != "Y")
 
 
 def foir(s) -> dict | None:
-    """Post-proposal FOIR: (existing + proposed monthly EMI) / monthly income, income being (PAT + depreciation) / 12."""
-    res, dt = s["res"], s["dscr"]
+    """Post-proposal FOIR: (existing + proposed monthly outgo) / monthly income. Income is the eligible income from
+    step 1; without it, (PAT + depreciation) / 12 from the latest financials."""
+    pot, vs, dt = s.get("potential"), s.get("proposal_vs_potential"), s["dscr"]
+    if pot and pot.get("monthly_income") and vs:
+        return {"foir": vs["foir_after"], "income": pot["monthly_income"], "existing": pot["obligations"]["monthly"],
+                "proposed": vs["new_emi"], "basis": "eligible income from step 1"}
+    res = s["res"]
     fin = res["tables"]["financials"] if res is not None else pd.DataFrame()
     if fin.empty or dt is None or dt.empty or not {"profit_after_tax", "depreciation"} <= set(fin.columns):
         return None
@@ -212,12 +220,12 @@ def foir(s) -> dict | None:
     if _na(last["profit_after_tax"]) or _na(last["depreciation"]):
         return None
     income = (last["profit_after_tax"] + last["depreciation"]) / 12
-    client = s["case"].get("client") or {}
-    existing = existing_emi(client) if client.get("obligations") else float(dt["existing_debt_service"].iloc[0]) / 12
+    existing = pot["obligations"]["monthly"] if pot and pot["obligations"]["count"] else float(dt["existing_debt_service"].iloc[0]) / 12
     proposed = float((dt["new_interest"] + dt["new_principal"]).max()) / 12
     if income <= 0:
         return None
-    return {"foir": (existing + proposed) / income, "income": income, "existing": existing, "proposed": proposed}
+    return {"foir": (existing + proposed) / income, "income": income, "existing": existing, "proposed": proposed,
+            "basis": "PAT + depreciation"}
 
 
 # ---------------------------------------------------------------- sections
@@ -226,8 +234,10 @@ def _cover(s, info, contents):
     b, t = s["case"]["borrower"], s["totals"]
     name = e(b["name"] or "Unnamed borrower")
     rows = [("Constitution", e(b["constitution"])),
-            ("Total proposed", e(inr(t["total"])) + f' &nbsp;<span class="muted">(fund {e(inr(t["fund"]))} · '
-                                                     f'non-fund {e(inr(t["nonfund"]))})</span>'),
+            ("Debt proposed", e(inr(t["total"])) + f' &nbsp;<span class="muted">(fund {e(inr(t["fund"]))} · '
+                                                    f'non-fund limits {e(inr(t["nonfund"]))})</span>'),
+            *([("Equity requested", e(inr(t["equity"])) + ' &nbsp;<span class="muted">(separate from debt)</span>')]
+              if t.get("equity") else []),
             ("Submitted to", e(", ".join(x for x in (info.get("bank"), info.get("branch")) if x) or "—")),
             ("Prepared by", e(info.get("prepared_by"))), ("Reference", e(info.get("reference"))),
             ("Date", e(info.get("date") or datetime.now().strftime("%d %b %Y")))]
@@ -272,14 +282,14 @@ def _summary(s, info):
          cap["verdict"]["status"] if cap else None),
     ]
     rows = [[escape(a), f'<b>{v}</b>', escape(bm), status(st_) if st_ else ""] for a, v, bm, st_ in metrics]
-    out = "<h1>10. Overall assessment</h1>"
+    out = "<h1>11. Overall assessment</h1>"
     out += table(["Measure", "Value", "Benchmark", "Assessment"], rows, widths=["40%", "22%", "18%", "20%"])
     out += "<h2>Overall view</h2>"
     if cap:
         out += (f'<div class="box">{status(cap["verdict"]["status"], "Repayment capacity: " + cap["verdict"]["label"])}'
                 f' — {e(cap["verdict"]["meaning"])}</div>')
     out += (f"<p>Findings across the file: <span class=critical>{n['High']} high</span>, "
-            f"<span class=warning>{n['Medium']} medium</span>, {n['Low']} low (section 11).</p>")
+            f"<span class=warning>{n['Medium']} medium</span>, {n['Low']} low (section 12).</p>")
     highs = fl[fl["severity"] == "High"] if not fl.empty else fl
     if not highs.empty:
         out += "<ul>" + "".join(f"<li>{e(r['area'])}: {e(r['finding'])}</li>" for _, r in highs.iterrows()) + "</ul>"
@@ -322,8 +332,15 @@ def _company_kyc(s, docs, ref, missing, gst_meta, title):
     out += "<h2>Documents</h2>"
     out += '<p class="muted">Attached as received from the borrower. Not verified by the preparer.</p>'
     out += _kyc_table(docs, ref)
+    rows = s.get("kyc_rows") or []
+    if rows:
+        out += "<h2>Checklist status</h2>" + table(
+            ["Document", "Category", "Status"],
+            [[e(r["label"]), e(r["tier"]), status({"provided": "good", "na": None}.get(r["status"], "warning"),
+                                                    r["status_label"])] for r in rows], widths=[0.5, 0.3, 0.2])
     if missing:
-        out += "<h2>Required documents not yet received</h2><ul>" + "".join(f"<li>{e(m)}</li>" for m in missing) + "</ul>"
+        out += ("<h2>Still to be provided (information only)</h2><ul>" + "".join(f"<li>{e(m)}</li>" for m in missing)
+                + '</ul><p class="muted">Not every document applies to every borrower; the bank may ask for these under its policy.</p>')
     return out
 
 
@@ -344,7 +361,7 @@ def _director_kyc(s, people, docs, ref, title):
 
 def _proposal(s):
     t, fac = s["totals"], s["facilities"]
-    out = "<h1>5. Proposed plan</h1>"
+    out = "<h1>6. Proposed plan</h1>"
     rows = []
     for i, f in enumerate(s["case"]["facilities"]):
         p = loans.product(f["product"])
@@ -359,14 +376,36 @@ def _proposal(s):
                 continue
             terms.append(f"Project cost {inr(v)}" if key == "project_cost" else label.format(
                 int(v) if isinstance(v, float) and v.is_integer() else v))
-        rows.append([e(f["product"]), e(p["category"]), lakh(f.get("amount")), e(f.get("rate_pct")),
-                     e(r["Repayment"] if r is not None else ""), e("; ".join(terms)), e(f.get("purpose"))])
-    out += table(["Facility", "Type", "Amount (₹ lakh)", "Rate %", "Repayment", "Terms", "Purpose"], rows,
-                 num_cols=(2, 3))
-    out += kv_table([("Fund based", e(inr(t["fund"]))), ("Non-fund based", e(inr(t["nonfund"]))),
-                     ("Total proposed", f"<b>{e(inr(t['total']))}</b>"),
-                     ("Net exposure (after cash margins)", e(inr(t["net_exposure"]))),
-                     ("Total with existing exposure", e(inr(t["total"] + (s["case"]["borrower"].get("existing_exposure") or 0))))])
+        cl = loans.classification(f)
+        rows.append([e(f["product"]), e(f"{cl['basis']} · {'Secured' if cl['secured'] else 'Unsecured'}"), lakh(f.get("amount")),
+                     e(f.get("rate_pct")), e(r["Repayment"] if r is not None else ""), e("; ".join(terms)), e(f.get("purpose"))])
+    if rows:
+        out += "<h2>Debt</h2>" + table(["Facility", "Class (debt)", "Amount (₹ lakh)", "Rate %", "Repayment", "Terms", "Purpose"], rows,
+                                       num_cols=(2, 3))
+    else:
+        out += '<p class="muted">No debt facilities requested.</p>'
+    nfb = s.get("nfb") or []
+    if nfb:
+        out += "<h2>Non-fund limits (₹ lakh)</h2>" + table(
+            ["Instrument", "Limit", "Utilised", "Utilisation", "Margin %", "Margin money", "Commission %", "CCF", "Fund-based equivalent"],
+            [[e(x["product"]), lakh(x["limit"]), lakh(x["utilised"]), "—" if x["utilisation"] is None else f"{x['utilisation']:.0%}",
+              e(f"{x['margin_pct']:g}"), lakh(x["margin_money"]), e(x["commission_pct"]), f"{x['ccf_pct']:g}%", lakh(x["fund_equivalent"])]
+             for x in nfb], num_cols=(1, 2, 3, 4, 5, 6, 7, 8))
+    eq = (s.get("equity") or {}).get("rows") or []
+    if eq:
+        out += "<h2>Equity requested (separate from debt)</h2>" + table(
+            ["Instrument", "Amount (₹ lakh)", "Investor", "Valuation basis", "Dilution", "Use of funds"],
+            [[e(r.get("instrument")), lakh(r.get("amount")), e(r.get("investor")), e(r.get("valuation_basis")),
+              "—" if r.get("dilution_pct") is None else f"{r['dilution_pct']:.1f}%", e(r.get("use_of_funds"))] for r in eq],
+            num_cols=(1,))
+    out += "<h2>Totals by class</h2>" + kv_table([
+        ("Fund-based debt", e(inr(t["fund"]))), ("Non-fund-based limits", e(inr(t["nonfund"]))),
+        ("Non-fund fund-based equivalent (CCF)", e(inr(t.get("nfb_fund_equivalent")))),
+        ("Total debt proposed", f"<b>{e(inr(t['total']))}</b>"),
+        ("Secured / unsecured debt", e(f"{inr(t.get('secured'))} / {inr(t.get('unsecured'))}")),
+        ("Net exposure (after cash margins)", e(inr(t["net_exposure"]))),
+        ("Total with existing exposure", e(inr(t["total"] + (s["case"]["borrower"].get("existing_exposure") or 0)))),
+        ("Equity requested (not exposure)", e(inr(t.get("equity"))))])
     return out
 
 
@@ -387,6 +426,59 @@ def _assessment(s):
     out += ('<p class="muted">Working capital: turnover method (Nayak Committee, 20% of projected turnover) for limits up '
             'to ₹5 Cr, MPBF second method of lending above that. Term loans: project cost less promoter margin. '
             'Non-fund limits: contract pipeline / purchase cycle.</p>')
+    return out
+
+
+def _potential(s) -> str:
+    """Borrower profile & repayment potential (step 1). Every table is optional; blanks print as 'not provided'."""
+    pot, th = s["potential"], s.get("thresholds") or kpis.THRESHOLDS
+    v = pot["verdict"]
+    out = "<h1>3. Borrower profile &amp; repayment potential</h1>"
+    out += f'<div class="box">{status(v["status"], v["label"])} — {e(v["meaning"])}</div>'
+    f, ob, nw, inc = pot["foir"], pot["obligations"], pot["net_worth"], pot["income"]
+    out += kv_table([
+        ("Eligible income (a month)", e(inr(pot["monthly_income"])) if pot["monthly_income"] else "not provided"),
+        ("Existing obligations (a month)", e(inr(ob["monthly"])) if ob["count"] else "not provided"),
+        ("FOIR on existing obligations", "—" if f is None else f"{f:.0%} (cap {th['foir_max']:.0%})"),
+        ("Room for a new EMI (a month)", e(inr(pot["max_emi"]))),
+        ("Indicative maximum loan", e(inr(pot["max_loan"])) + (f' <span class="muted">at {pot["rate_pct"]:g}% over '
+                                                              f'{pot["tenure_months"]} months</span>' if pot["max_loan"] else "")),
+        ("Net worth", e(inr(nw["net_worth"])) if nw["net_worth"] is not None else "not provided"),
+        ("Bureau (weakest band)", e(pot["scores"]["worst"] or "not provided")),
+        ("Repayment track record", e(pot["track"]["rating"]))])
+    if pot["observations"]:
+        out += "<h2>Observations</h2><ul>" + "".join(f"<li>{e(o)}</li>" for o in pot["observations"]) + "</ul>"
+    sc = pot["scores"]["rows"]
+    out += "<h2>Credit scores</h2>" + (table(
+        ["Name", "Role", "Score", "Bureau", "Report date", "Band"],
+        [[e(r.get("name")), e(r.get("role")), e(r.get("score")), e(r.get("bureau")), e(r.get("report_date")),
+          status(r["status"], r["band"])] for r in sc]) if sc else
+        f'<p class="muted">{"New to credit - no bureau score." if (s["case"].get("borrower_profile") or {}).get("no_score") else "Not provided."}</p>')
+    out += "<h2>Income sources (₹ lakh a year)</h2>" + (table(
+        ["Source", "Description", "Amount a year", "Stability", "Proof"],
+        [[e(r.get("source")), e(r.get("description")), lakh(r.get("annual")), e(r.get("stability")), e(r.get("proof"))]
+         for r in inc["rows"]] + [["<b>Total</b>", "", f"<b>{lakh(inc['total_annual'])}</b>", f"stable {lakh(inc['stable_annual'])}", ""]],
+        num_cols=(2,)) if inc["rows"] else '<p class="muted">Not provided.</p>')
+    if nw["assets"] or nw["liabilities"]:
+        out += "<h2>Net worth (₹ lakh)</h2>" + table(
+            ["Side", "Type", "Description", "Value", "Basis"],
+            [["Asset", e(r.get("type")), e(r.get("description")), lakh(r["value"]), e(r.get("basis"))] for r in nw["assets"]]
+            + [["Liability", e(r.get("type")), e(r.get("description")), lakh(r["value"]), e(r.get("basis"))] for r in nw["liabilities"]]
+            + [["<b>Net worth</b>", "", "", f"<b>{lakh(nw['net_worth'])}</b>", ""]], num_cols=(3,))
+    tr = pot["track"]
+    out += "<h2>Past repayment record</h2>" + (table(
+        ["Lender", "Type", "Sanctioned (₹ lakh)", "Year", "Status", "Max DPD", "Default"],
+        [[e(r.get("lender")), e(r.get("type")), lakh(r.get("sanctioned")), e(r.get("year")), e(r.get("status")),
+          e(r.get("max_dpd")), e(r.get("default"))] for r in tr["rows"]], num_cols=(2, 3, 5))
+        + f'<p>Rating: {status(tr["status"], tr["rating"])} — {e("; ".join(tr["reasons"]))}</p>' if tr["rows"] else '<p class="muted">No past loans or cards recorded.</p>')
+    out += "<h2>Existing liabilities (₹ lakh)</h2>" + (table(
+        ["Lender", "Facility", "Outstanding", "Monthly obligation", "Rate %", "Months left", "Secured", "Basis", "Closing?"],
+        [[e(r.get("lender")), e(r.get("facility_type")), lakh(r["outstanding"]), lakh(r["emi"]), e(r.get("rate")),
+          e(r.get("tenure_left")), e(r.get("secured")), e(r.get("kind")), e(r.get("close_with_new"))] for r in ob["rows"]]
+        + [["<b>Total</b>", "", f"<b>{lakh(ob['total_outstanding'])}</b>", f"<b>{lakh(ob['monthly'])}</b>", "", "", "", "", ""]],
+        num_cols=(2, 3, 4, 5)) if ob["rows"] else '<p class="muted">None recorded.</p>')
+    if pot["missing"]:
+        out += '<p class="muted">Not provided: ' + e(", ".join(pot["missing"])) + ".</p>"
     return out
 
 
@@ -419,7 +511,7 @@ def _sheet_financials(fin, years, ytd) -> str:
 
 def _financials(s):
     res = s["res"]
-    out = "<h1>3. Financials — last 2 years</h1>"
+    out = "<h1>4. Financials — last 2 years</h1>"
     if res is None:
         return out + '<p class="critical">No financial statements were read.</p>'
     fin = res["tables"]["financials"]
@@ -463,7 +555,7 @@ def _financials(s):
 
 def _banking(s):
     res = s["res"]
-    out = "<h1>8. Banking conduct</h1>"
+    out = "<h1>9. Banking conduct</h1>"
     if res is None or res["bank_kpis"].empty:
         return out + '<p class="muted">No bank statements were read.</p>'
     bk = res["bank_kpis"]
@@ -495,7 +587,7 @@ def _banking(s):
 
 def _gst(s):
     res = s["res"]
-    out = "<h1>4. GST — last 12 months</h1>"
+    out = "<h1>5. GST — last 12 months</h1>"
     if res is None or res["tables"]["gst"].empty:
         return out + '<p class="muted">No GST returns were read.</p>'
     g, m = kpis.gst_last_12_months(res["tables"]["gst"])
@@ -534,7 +626,7 @@ def _gst(s):
 def _itr(s):
     res = s["res"]
     itr = res["tables"]["itr"] if res is not None else pd.DataFrame()
-    out = "<h1>9. Income tax returns of promoters / guarantors</h1>"
+    out = "<h1>10. Income tax returns of promoters / guarantors</h1>"
     if itr.empty:
         return out + '<p class="muted">No ITRs were read.</p>'
     cols = [("assessee_name", "Assessee", "text"), ("assessment_year", "AY", "text"), ("itr_form", "Form", "text"),
@@ -548,9 +640,11 @@ def _itr(s):
 
 def _security(s):
     secs, cov = s["case"]["securities"], s["cover"]
-    out = "<h1>6. Security</h1>"
+    out = "<h1>7. Security</h1>"
+    if s.get("security_opted") == "no" and not secs:
+        return out + '<p>Not applicable — the request is unsecured. Security cover: n/a.</p>'
     if not secs:
-        return out + '<p class="critical">No security offered.</p>'
+        return out + '<p class="muted">No security entered' + (" yet (to be decided)." if s.get("security_opted") == "later" else ".") + "</p>"
     rows = []
     for x in secs:
         cls_, charge, _, _ = sec.SECURITY_TYPES[x["kind"]]
@@ -577,25 +671,24 @@ def _security(s):
 
 def _repayment(s, schedules):
     cap, dt = s["capacity"], s["dscr"]
-    out = "<h1>7. Repayment</h1>"
+    out = "<h1>8. Repayment</h1>"
     if cap is None:
         return out + '<p class="muted">Not assessed — no facilities.</p>'
     out += (f'<div class="box">{status(cap["verdict"]["status"], cap["verdict"]["label"])} — '
             f'{e(cap["verdict"]["meaning"])}</div>')
-    obs = (s["case"].get("client") or {}).get("obligations")
+    obs = (s.get("potential") or {}).get("obligations", {}).get("rows") or []
     if obs:
         out += "<h2>Loan obligations (₹ lakh)</h2>" + table(
-            ["Sr. no", "Bank name", "Type of loan", "Loan amount", "EMI amount", "Pending", "Term", "ROI %", "EMI start"],
-            [[str(i), e(o.get("Lender")), e(o.get("Product")), lakh(o.get("Loan amount ₹")), lakh(o.get("EMI ₹")),
-              lakh(o.get("Outstanding ₹")), e(o.get("Term months")), e(o.get("ROI %")), e(o.get("EMI start"))]
-             for i, o in enumerate(obs, 1)], num_cols=(3, 4, 5, 6, 7))
+            ["Sr. no", "Lender", "Facility", "Outstanding", "Monthly obligation", "Rate %", "Months left", "Basis"],
+            [[str(i), e(o.get("lender")), e(o.get("facility_type")), lakh(o["outstanding"]), lakh(o["emi"]),
+              e(o.get("rate")), e(o.get("tenure_left")), e(o.get("kind"))] for i, o in enumerate(obs, 1)], num_cols=(3, 4, 5, 6))
     f = foir(s)
-    if f:
+    if f and f["foir"] is not None:
         th = (s.get("thresholds") or kpis.THRESHOLDS)["foir_max"]
         word = status("good" if f["foir"] <= th else "critical", f"{f['foir']:.0%}")
         out += (f'<p><b>FOIR after this proposal:</b> {word} against '
-                f'a {th:.0%} cap (income {e(inr(f["income"]))} a month from PAT + depreciation; existing EMI {e(inr(f["existing"]))}; '
-                f'proposed EMI {e(inr(f["proposed"]))}).</p>')
+                f'a {th:.0%} cap (income {e(inr(f["income"]))} a month, {e(f["basis"])}; existing obligations {e(inr(f["existing"]))}; '
+                f'proposed outgo {e(inr(f["proposed"]))}).</p>')
     out += "<h2>Observations</h2><ul>" + "".join(
         f"<li><b>{e(n['title'])}.</b> {e(n['text'])}</li>" for n in cap["notes"]) + "</ul>"
     m = cap["metrics"]
@@ -632,7 +725,7 @@ def _repayment(s, schedules):
 
 def _risks(s):
     fl = s["flags"]
-    out = "<h1>11. Risks, observations and mitigants</h1>"
+    out = "<h1>12. Risks, observations and mitigants</h1>"
     if fl.empty:
         return out + "<p>No findings.</p>"
     fl = fl.sort_values("severity", key=lambda c: c.map(SEV_ORDER))
@@ -715,7 +808,7 @@ def suggested_terms(s) -> tuple[list, list]:
 
 
 def _checks(s):
-    out = "<h1>12. Compliance checks for the bank</h1>"
+    out = "<h1>13. Compliance checks for the bank</h1>"
     out += '<p class="muted">Not carried out by the preparer. Left for the bank to record.</p>'
     out += table(["Check", "Why", "Status / remarks (bank)"],
                  [[e(c), e(w), "&nbsp;"] for c, w in compliance_checks(s)], widths=["44%", "36%", "20%"])
@@ -724,7 +817,7 @@ def _checks(s):
 
 def _terms(s):
     pre, post = suggested_terms(s)
-    out = "<h1>13. Suggested terms and conditions</h1>"
+    out = "<h1>14. Suggested terms and conditions</h1>"
     out += '<p class="muted">Suggested from the proposal and security. The bank\'s sanction letter prevails.</p>'
     out += "<h2>Before disbursement</h2><ul>" + "".join(f"<li>{e(x)}</li>" for x in pre) + "</ul>"
     out += "<h2>After disbursement / covenants</h2><ul>" + "".join(f"<li>{e(x)}</li>" for x in post) + "</ul>"
@@ -732,21 +825,21 @@ def _terms(s):
 
 
 def _other_documents(annex):
-    return "<h1>14. Other documents relied on</h1>" + table(
+    return "<h1>15. Other documents relied on</h1>" + table(
         ["ID", "Group", "File", "In this report"],
         [[e(a["key"]), e(a["group"]), e(a["filename"]), e(a["where"])] for a in annex])
 
 
 def _declaration(info):
-    return ("<h1>15. Basis of preparation and declaration</h1>"
-            "<ul><li>This note is prepared from documents supplied by the borrower, listed in sections 1, 2 and 14 and "
+    return ("<h1>16. Basis of preparation and declaration</h1>"
+            "<ul><li>This note is prepared from documents supplied by the borrower, listed in sections 1, 2 and 15 and "
             "attached.</li>"
             "<li>Figures were read from those documents (automatically, then reviewed); where they differ, the original "
             "documents prevail.</li>"
             "<li>KYC documents are attached as received. Their verification, credit bureau and regulatory checks "
-            "(section 12), legal scrutiny and valuation are for the bank.</li>"
-            "<li>Projections assume the growth, tax and utilisation stated in section 7; actual results may differ.</li>"
-            "<li>The terms in section 13 are suggestions; the bank's sanction terms prevail.</li></ul>"
+            "(section 13), legal scrutiny and valuation are for the bank.</li>"
+            "<li>Projections assume the growth, tax and utilisation stated in section 8; actual results may differ.</li>"
+            "<li>The terms in section 14 are suggestions; the bank's sanction terms prevail.</li></ul>"
             '<p style="margin-top:24pt"></p>' +
             table([], [["<b>Prepared by</b>", e(info.get("prepared_by")), "<b>Signature</b>", "<br><br>"],
                        ["<b>Date</b>", e(info.get("date") or datetime.now().strftime("%d %b %Y")), "<b>Place</b>", ""]],
@@ -843,7 +936,7 @@ def _attach(group: str, files: list, code: str, where: str, title: str) -> list:
 
 def build_pdf(s: dict, info: dict, kyc_list: list, kyc_missing: list, other_docs: dict,
               schedules: dict | None = None, gst_meta: dict | None = None) -> bytes:
-    """s: steps.summary.build(). info: bank, branch, prepared_by, reference, date, recommendation.
+    """s: engine.Workspace.build(). info: bank, branch, prepared_by, reference, date, recommendation.
     kyc_list: kyc_step.kyc_docs(). other_docs: {group: [(doc_id, filename, bytes)]}.
     schedules: {facility id: repayment schedule} for the yearly tables."""
     b = s["case"]["borrower"]
@@ -873,7 +966,7 @@ def build_pdf(s: dict, info: dict, kyc_list: list, kyc_missing: list, other_docs
     parts = [
         ("html", [_company_kyc(s, entity_docs, ref, kyc_missing, gst_meta or {}, entity)]), ("docs", entity_annex),
         ("html", [_director_kyc(s, people_on_file(s, kyc_list), personal, ref, person)]), ("docs", person_annex),
-        ("html", [_financials(s), _gst(s), _proposal(s) + _assessment(s), _security(s), _repayment(s, schedules),
+        ("html", [_potential(s), _financials(s), _gst(s), _proposal(s) + _assessment(s), _security(s), _repayment(s, schedules),
                   _banking(s), _itr(s) + _summary(s, info), _risks(s), _checks(s), _terms(s) + _other_documents(annex),
                   _declaration(info)]),
         ("annex", annex),

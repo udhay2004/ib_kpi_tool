@@ -53,6 +53,33 @@ REQUIRED = {
 }
 
 
+RECOMMENDED = ["udyam", "lei"]  # shown as "Recommended" when not already on the policy list
+TIERS = {"required": "Required by bank policy (if applicable)", "recommended": "Recommended"}
+# Nothing in KYC blocks the case: every item can be resolved one of these ways (or left open).
+STATUSES = {"provided": "Provided", "not_available": "Not available", "na": "Not applicable"}
+
+
+def checklist(constitution: str, have: dict, statuses: dict | None = None) -> list:
+    """One row per entity document for this constitution. have: {kind: [doc ids attached]}; statuses: the analyst's
+    choice per kind. A document attached counts as provided. Rows: kind, label, tier, status, ids, resolved."""
+    statuses = statuses or {}
+    req = REQUIRED[family(constitution)]
+    kinds = [(k, "required") for k in req] + [(k, "recommended") for k in RECOMMENDED if k not in req]
+    rows = []
+    for k, tier in kinds:
+        ids = have.get(k, [])
+        st = "provided" if ids else statuses.get(k) if statuses.get(k) in STATUSES else None
+        rows.append({"kind": k, "label": ENTITY_DOCS[k], "tier": TIERS[tier], "status": st,
+                     "status_label": STATUSES.get(st, "Not resolved"), "ids": ids, "attached": bool(ids),
+                     "resolved": st is not None})
+    return rows
+
+
+def still_missing(rows: list) -> list:
+    """Labels of documents not provided and not marked 'not applicable' - informational, never an error."""
+    return [r["label"] for r in rows if r["status"] not in ("provided", "na")]
+
+
 def family(constitution: str) -> str:
     c = constitution.lower()
     if "company" in c or "opc" in c:

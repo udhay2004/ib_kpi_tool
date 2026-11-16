@@ -50,6 +50,23 @@ def _profile(s) -> str:
         ("Key customers & suppliers (concentration %)", e(parties))])
 
 
+def _potential(s) -> str:
+    pot = s.get("potential")
+    if not pot:
+        return ""
+    v, ob, nw = pot["verdict"], pot["obligations"], pot["net_worth"]
+    f = pot["foir"]
+    return "<h1>2A. Borrower Profile &amp; Repayment Potential</h1>" + _kv([
+        ("Verdict", cr.status(v["status"], v["label"]) + " — " + e(v["meaning"])),
+        ("Eligible income / existing obligations (a month)", e(f"{cr.inr(pot['monthly_income'])} / {cr.inr(ob['monthly'])}")),
+        ("FOIR (existing) / room for a new EMI", e(("—" if f is None else f"{f:.0%}") + f" / {cr.inr(pot['max_emi'])}")),
+        ("Indicative maximum loan", e(cr.inr(pot["max_loan"]) + (f" at {pot['rate_pct']:g}% over {pot['tenure_months']} months"
+                                                                 if pot["max_loan"] else ""))),
+        ("Net worth", e(cr.inr(nw["net_worth"]))),
+        ("Bureau / track record", e(f"{pot['scores']['worst'] or 'not provided'} / {pot['track']['rating']}")),
+        ("Observations", "<br>".join(e(o) for o in pot["observations"]) or "—")])
+
+
 def _financial(s) -> str:
     out = "<h1>3. Financial Summary (₹ lakh)</h1>"
     res = s["res"]
@@ -114,8 +131,11 @@ def _banking(s, info) -> str:
 
 def _bureau(s) -> str:
     c = s["case"].get("client") or {}
-    scores = "<br>".join(e(f"{p.get('Name')}: CIBIL " + ("—" if _na(p.get("CIBIL")) else f"{p['CIBIL']:.0f}")
-                           + (f"; {p['CRIF / Experian']}" if p.get("CRIF / Experian") else "")) for p in c.get("promoters") or []) or "—"
+    rows = ((s.get("potential") or {}).get("scores") or {}).get("rows") or []
+    scores = "<br>".join(e(f"{r.get('name')}: {r.get('bureau') or 'score'} {r.get('score') if r.get('score') is not None else '—'} "
+                           f"({r['band']})") for r in rows) or \
+        "<br>".join(e(f"{p.get('Name')}: CIBIL " + ("—" if _na(p.get("CIBIL")) else f"{p['CIBIL']:.0f}")
+                      + (f"; {p['CRIF / Experian']}" if p.get("CRIF / Experian") else "")) for p in c.get("promoters") or []) or "—"
     return "<h1>5. Bureau Summary</h1>" + _kv([
         ("Scores — promoters (bureau-wise)", scores), ("CMR (if company)", e(c.get("cmr"))),
         ("DPD history / flags (settled, written-off, suit-filed)", e(c.get("dpd"))),
@@ -124,11 +144,11 @@ def _bureau(s) -> str:
 
 
 def _obligations(s) -> str:
-    c = s["case"].get("client") or {}
-    obs = c.get("obligations") or []
+    pot = s.get("potential") or {}
+    obs = (pot.get("obligations") or {}).get("rows") or []
     fac = s["facilities"]
-    closing = "<br>".join(e(f"{o.get('Lender')} {o.get('Product')}, outstanding {cr.inr(o.get('Outstanding ₹'))}")
-                          for o in obs if o.get("Close with new loan") == "Y") or "None"
+    closing = "<br>".join(e(f"{o.get('lender')} {o.get('facility_type')}, outstanding {cr.inr(o.get('outstanding'))}")
+                          for o in obs if o.get("close_with_new") == "Y") or "None"
     elig = "<br>".join(e(f"{r['Facility']}: {r['Assessment']}, assessed {cr.inr(r['Eligible (₹)'])}") for _, r in fac.iterrows()) if not fac.empty else "—"
     f = cr.foir(s)
     if f:
@@ -137,7 +157,7 @@ def _obligations(s) -> str:
                            f"a month, existing EMI {cr.inr(f['existing'])}, proposed EMI {cr.inr(f['proposed'])}")
     structure = "<br>".join(e(f"{r['Facility']}: {cr.inr(r['Amount (₹)'])}, {r['Repayment']}") for _, r in fac.iterrows()) if not fac.empty else "—"
     return "<h1>6. Obligations & Eligibility</h1>" + _kv([
-        ("Total existing EMIs (from Obligation Sheet)", e(cr.inr(cr.existing_emi(c))) if obs else "—"),
+        ("Total existing monthly obligations (step 1)", e(cr.inr(cr.existing_emi(s))) if obs else "—"),
         ("Loans to be closed / consolidated", closing), ("Eligibility — method & computation", elig),
         ("Proposed structure (facility-wise)", structure)])
 
@@ -146,7 +166,8 @@ def _collateral(s, info) -> str:
     secs = [x for x in s["case"]["securities"] if cr.sec.SECURITY_TYPES[x["kind"]][0] != "Guarantee"]
     cov, t = s["cover"], s["totals"]
     if not secs:
-        return '<h1>7. Collateral (if applicable)</h1><p class="muted">No collateral offered.</p>'
+        why = "Not applicable — unsecured request." if s.get("security_opted") == "no" else "No collateral offered."
+        return f'<h1>7. Collateral (if applicable)</h1><p class="muted">{why}</p>'
     mv = cov["market_value"]
     ltv = t["net_exposure"] / mv if mv else None
     charges = "; ".join(f"{x['kind']}: {x['existing_charge']}" for x in secs if x.get("existing_charge"))
@@ -194,7 +215,7 @@ def build_pdf(s: dict, info: dict, kyc_kinds: set, doc_types: set) -> bytes:
     head = ('<div class="cover-sub" style="margin-bottom:2pt">Internal Deal Assessment — Prepare Before Lender Login</div>'
             f'<div class="cover-name" style="margin:0 0 8pt 0;font-size:18pt">Credit Appraisal Memo (CAM-Lite)</div><p><b>{e(name)}</b> '
             '&nbsp;<span class="critical">Internal: not for the lender</span></p>')
-    html = (head + _deal(s, info) + _profile(s) + _financial(s) + _banking(s, info) + _bureau(s) + _obligations(s)
+    html = (head + _deal(s, info) + _profile(s) + _potential(s) + _financial(s) + _banking(s, info) + _bureau(s) + _obligations(s)
             + _collateral(s, info) + _swot(s) + _recommendation(info))
     pdf, _ = cr._render([html, _checklist(s, kyc_kinds, doc_types)])
     out = fitz.open("pdf", pdf)

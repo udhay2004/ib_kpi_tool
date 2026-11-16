@@ -108,7 +108,8 @@ def demo_docs() -> list:
 
 
 def demo_case() -> dict:
-    """Borrower, facilities requested and security offered for the demo company."""
+    """Borrower, repayment potential, facilities and equity requested, and security offered for the demo company.
+    Shows every class: secured and unsecured fund-based debt, non-fund limits with utilisation, and an equity raise."""
     from datetime import date
 
     import security as sec
@@ -122,6 +123,44 @@ def demo_case() -> dict:
         "borrower": {"name": "Demo Polymers Pvt Ltd", "constitution": "Private limited company",
                      "industry": "Plastic packaging manufacturer", "msme_class": "Small", "years_in_business": 14,
                      "existing_exposure": 825 * L},
+        "borrower_profile": {
+            "no_score": False, "rate_pct": 11.0, "tenure_months": 60,
+            "scores": [
+                {"name": "Director A", "role": "Promoter", "score": 762, "bureau": "CIBIL", "report_date": "2026-10-15"},
+                {"name": "Director B", "role": "Director", "score": 741, "bureau": "CIBIL", "report_date": "2026-10-15"}],
+            "income": [
+                {"source": "Business income", "description": "Cash accrual (PAT + depreciation), FY2024-25", "amount": 490 * L,
+                 "frequency": "Annual", "stability": "Stable", "proof": "Y"},
+                {"source": "Rental", "description": "Godown let out at Ambernath", "amount": 0.5 * L, "frequency": "Monthly",
+                 "stability": "Stable", "proof": "Y"},
+                {"source": "Interest / dividend", "description": "FD interest", "amount": 2 * L, "frequency": "Annual",
+                 "stability": "Variable", "proof": "N"}],
+            "assets": [
+                {"type": "Property", "description": "Factory, Plot 14 MIDC Ambernath", "value": 950 * L, "basis": "Documented"},
+                {"type": "Financial investments", "description": "Fixed deposits and mutual funds", "value": 65 * L, "basis": "Documented"},
+                {"type": "Vehicles", "description": "Two delivery trucks and a car", "value": 40 * L, "basis": "Self-declared"}],
+            "liabilities": [
+                {"type": "Loans", "description": "Existing bank borrowings", "value": 825 * L, "basis": "Documented"},
+                {"type": "Payables / dues", "description": "Trade creditors", "value": 120 * L, "basis": "Self-declared"}],
+            "history": [
+                {"lender": "HDFC Bank", "type": "Term loan", "sanctioned": 300 * L, "year": 2023, "status": "Regular", "max_dpd": 0, "default": "N"},
+                {"lender": "ICICI Bank", "type": "Term loan", "sanctioned": 150 * L, "year": 2017, "status": "Closed", "max_dpd": 0, "default": "N"},
+                {"lender": "Axis Bank", "type": "Credit card (Director A)", "sanctioned": 5 * L, "year": 2019, "status": "Delayed",
+                 "max_dpd": 20, "default": "N"}],
+            "obligations": [
+                {"lender": "HDFC Bank", "facility_type": "Term loan", "outstanding": 180 * L, "emi": 6.5 * L, "rate": 10.5,
+                 "tenure_left": 30, "secured": "Secured", "kind": "Fund based", "close_with_new": "N"},
+                {"lender": "HDFC Bank", "facility_type": "Cash credit (interest)", "outstanding": 310 * L, "emi": 2.4 * L, "rate": 9.5,
+                 "tenure_left": 12, "secured": "Secured", "kind": "Fund based", "close_with_new": "N"},
+                {"lender": "HDFC Bank", "facility_type": "Bank guarantee limit", "outstanding": 50 * L, "emi": 0, "rate": 1.5,
+                 "tenure_left": 18, "secured": "Secured", "kind": "Non-fund based", "close_with_new": "N"}],
+        },
+        "security_opted": "yes",
+        "kyc_status": {"address_proof": "not_available"},
+        "equity": [
+            {"id": "eq01", "instrument": "CCPS (compulsorily convertible preference shares)", "amount": 200 * L,
+             "investor": "Family office (fictional)", "valuation_basis": "Pre-money valuation", "pre_money": 4000 * L,
+             "dilution_pct": None, "use_of_funds": "Promoter margin for the second extrusion line"}],
         "facilities": [
             {"id": "cc01", "product": "Cash Credit (CC)", "amount": 600 * L, "rate_pct": 9.75,
              "purpose": "Working capital for raw material and receivables", "projected_turnover": 0.0},
@@ -129,10 +168,13 @@ def demo_case() -> dict:
              "purpose": "Second extrusion line", "tenor_months": 72, "moratorium_months": 6, "project_cost": 540 * L},
             {"id": "bg01", "product": "Performance guarantee", "amount": 150 * L, "rate_pct": 1.5,
              "purpose": "Supply contract with a state utility", "tenor_months": 24, "beneficiary": "State Power Utility",
-             "contracts_requiring_bg": 1800 * L, "bg_pct_of_contract": 10.0, "cash_margin_pct": 15.0},
+             "contracts_requiring_bg": 1800 * L, "bg_pct_of_contract": 10.0, "cash_margin_pct": 15.0,
+             "limit_utilised": 90 * L, "ccf_pct": 50.0},
             {"id": "lc01", "product": "Letter of credit", "amount": 100 * L, "rate_pct": 1.0,
              "purpose": "Polymer resin purchases", "lc_kind": "Inland usance", "annual_purchases_lc": 900 * L,
-             "lead_time_days": 15, "usance_days": 60, "cash_margin_pct": 10.0},
+             "lead_time_days": 15, "usance_days": 60, "cash_margin_pct": 10.0, "limit_utilised": 40 * L, "ccf_pct": 20.0},
+            {"id": "ubl01", "product": "Unsecured business loan", "amount": 50 * L, "rate_pct": 14.0, "tenor_months": 36,
+             "purpose": "Marketing and dealer onboarding", "secured": False},
         ],
         "securities": [
             s("Industrial property / factory", 950 * L, description="Plot 14, MIDC Ambernath, 2.1 acres with shed",
@@ -159,10 +201,6 @@ def demo_case() -> dict:
                 {"Name": "Director B", "Designation": "Director", "PAN": "AAAPB0000B", "Aadhaar last 4": "5678",
                  "Mobile": "90000 00001", "Email": "b@example.com", "DIN": "00000002", "Share %": 30.0, "Age": 47.0,
                  "Qualification": "MBA", "Experience yrs": 18.0, "Residence": "Owned", "CIBIL": 741.0}],
-            "obligations": [
-                {"Lender": "HDFC Bank", "Product": "Term loan", "Security": "Secured", "Loan amount ₹": 300 * L, "EMI ₹": 6.5 * L,
-                 "Outstanding ₹": 180 * L, "Term months": 60.0, "ROI %": 10.5, "EMI start": "05/2023", "Months left": 30.0,
-                 "Count in FOIR": "Y", "Close with new loan": "N"}],
             "customers": [{"Name": "Apex Packaging Ltd", "% of sales": 21.0, "Credit days": 60.0},
                           {"Name": "Nova Retail Pvt Ltd", "% of sales": 13.0, "Credit days": 45.0}],
             "suppliers": [{"Name": "Reliance Polymers", "% of purchases": 45.0, "Credit days": 30.0}],
